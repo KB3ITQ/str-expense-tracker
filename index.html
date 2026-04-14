@@ -559,6 +559,139 @@ async function visionOCR(b64) {
 function parseOCR(text) {
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
+  // Vendor: join first meaningful lines before order/invoice info
+  const skipPatterns = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
+  let vendorLines = [];
+  for (const line of lines) {
+    if (skipPatterns.test(line)) break;
+    vendorLines.push(line);
+    if (vendorLines.length >= 3) break;
+  }
+  const vendor = vendorLines.join(' ').trim() || 'Unknown';
+
+  // Date: prefer "Ordered" date, skip "Delivered"
+  let orderDate = null;
+  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+  if (!orderDate) {
+    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
+    for (const m of allDates) {
+      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
+      if (before.includes('deliver')) continue;
+      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+    }
+  }
+
+  // Extract key summary amounts first so we can exclude them from line items
+  const subM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const taxM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const totM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const subtotal = subM ? parseFloat(subM[1].replace(/,/g,'')) : null;
+  const tax = taxM ? parseFloat(taxM[1].replace(/,/g,'')) : null;
+  const total = totM ? parseFloat(totM[1].replace(/,/g,'')) : null;
+
+  // Build a set of amounts to exclude (summary rows)
+  const excludeAmounts = new Set();
+  if (tax) excludeAmounts.add(tax.toFixed(2));
+  if (total) excludeAmounts.add(total.toFixed(2));
+  // Also exclude 0.00 values
+  excludeAmounts.add('0.00');
+
+  // Bad description fragments to skip
+  const BAD_DESCS = ['subtotal','total','tax','shipping','discount','delivery','charge',
+    'unit price','net unit','page','sku','qty','quantity','item description',
+    'ordered','delivered','ship','invoice','order #','printed'];
+
+  // Find all dollar amounts with context
+  const priceRe = /\$([\d,]+\.\d{2})/g;
+  const candidates = [];
+  let pm;
+  while ((pm = priceRe.exec(text)) !== null) {
+    const price = parseFloat(pm[1].replace(/,/g,''));
+    if (price <= 0 || price > 50000) continue;
+    if (excludeAmounts.has(price.toFixed(2))) continue;
+
+    // Get lines before this price for description
+    const before = text.substring(Math.max(0, pm.index-300), pm.index);
+    const beforeLines = before.split('\n').map(l=>l.trim()).filter(Boolean);
+
+    let desc = '';
+    for (let i = beforeLines.length-1; i >= 0; i--) {
+      const l = beforeLines[i];
+      if (!l || /^[\$\d]/.test(l)) continue;
+      if (BAD_DESCS.some(w => l.toLowerCase().includes(w))) continue;
+      if (l.length < 3) continue;
+      desc = l; break;
+    }
+    if (desc) candidates.push({name: desc, price, key: price.toFixed(2)});
+  }
+
+  // If we have a subtotal, find the item that best matches it
+  // For multi-qty receipts: subtotal = qty * unit_price, so unit_price will also appear
+  // We want the subtotal-matching item OR if no subtotal, the largest non-excluded price
+  let itemLines = [];
+  const seenKeys = new Set();
+
+  if (subtotal) {
+    // Find item whose price equals subtotal (the pre-tax line total)
+    const match = candidates.find(c => Math.abs(c.price - subtotal) < 0.01);
+    if (match && !BAD_DESCS.some(w => match.name.toLowerCase().includes(w))) {
+      itemLines = [{name: match.name, price: match.price}];
+    } else {
+      // Use subtotal as a single item
+      itemLines = [{name: vendor, price: subtotal}];
+    }
+  } else {
+    // No subtotal — dedupe and use all valid candidates
+    for (const c of candidates) {
+      if (seenKeys.has(c.key)) continue;
+      if (BAD_DESCS.some(w => c.name.toLowerCase().includes(w))) continue;
+      seenKeys.add(c.key);
+      itemLines.push({name: c.name, price: c.price});
+    }
+  }
+
+  console.log('parseOCR — vendor:', vendor, 'date:', orderDate, 'items:', JSON.stringify(itemLines), 'sub:', subtotal, 'tax:', tax, 'total:', total);
+  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
+}
+
+function renderPDF(dataUrl, resolve, reject) {
+  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
+    pdf.getPage(1).then(page => {
+      const scale = 2.0;
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      page.render({canvasContext: ctx, viewport}).promise.then(() => {
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        resolve(jpegDataUrl.split(',')[1]);
+      }).catch(reject);
+    }).catch(reject);
+  }).catch(reject);
+}
+
+// ── VISION OCR ────────────────────────────────────────────
+async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  console.log('Vision: HTTP status:', r.status);
+  const d = await r.json();
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
+}
+
+function parseOCR(text) {
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+
   // Vendor: join first lines until we hit something that looks like an address/order number
   let vendorLines = [];
   const skipPatterns = /^(order|invoice|ship|#|\d{4,}|oconnor coastal)/i;
