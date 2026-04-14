@@ -427,12 +427,14 @@ const VCATS = {
 };
 
 // ── AUTH ──────────────────────────────────────────────────
+let tokenClient = null;
+
 function loadGIS() {
   return new Promise(res => {
     if (window.google?.accounts) { res(); return; }
     const s = document.createElement('script');
     s.src = 'https://accounts.google.com/gsi/client';
-    s.onload = res;
+    s.onload = () => setTimeout(res, 200);
     document.head.appendChild(s);
   });
 }
@@ -440,17 +442,20 @@ function loadGIS() {
 async function handleAuth() {
   if (token) { token = null; updateAuthUI(null); showToast('Signed out'); return; }
   await loadGIS();
-  google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID, scope: SCOPES,
-    callback: async (r) => {
-      if (r.error) { showToast('Sign-in failed: ' + r.error); return; }
-      token = r.access_token;
-      const u = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {headers:{Authorization:'Bearer '+token}}).then(x=>x.json());
-      updateAuthUI(u);
-      showToast('Signed in as ' + (u.name || u.email));
-      document.getElementById('uploadHint').textContent = folderIdSaved ? 'Receipts → ' + folderNameSaved : 'Connected — pick your receipts folder in Settings';
-    }
-  }).requestAccessToken();
+  if (!tokenClient) {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: (r) => {
+        if (r.error) { showToast('Sign-in failed: ' + r.error); return; }
+        token = r.access_token;
+        updateAuthUI({ name: 'Google Account', picture: null });
+        showToast('Signed in successfully');
+        document.getElementById('uploadHint').textContent = folderIdSaved ? 'Receipts -> ' + folderNameSaved : 'Connected - pick your receipts folder in Settings';
+      }
+    });
+  }
+  tokenClient.requestAccessToken({prompt: ''});
 }
 
 function updateAuthUI(u) {
