@@ -543,238 +543,99 @@ function renderPDF(dataUrl, resolve, reject) {
   }).catch(reject);
 }
 
-// ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
 
+// ── VISION OCR ────────────────────────────────────────────
 function parseOCR(text) {
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  // Vendor: collect lines before "Order #" or similar, join in order
+  // Vendor: collect lines before order/company info
   let vendorLines = [];
   for (const line of lines) {
-    if (/^(order|invoice|ship|#|\d{5,}|oconnor|kevin)/i.test(line)) break;
-    if (line.toLowerCase() === 'llc') { vendorLines.push(line); break; }
+    if (/^(order|invoice|ship|oconnor|kevin|\d{5,})/i.test(line)) break;
     vendorLines.push(line);
     if (vendorLines.length >= 3) break;
   }
-  // Join and clean — remove trailing LLC/company suffixes that aren't the store
   let vendor = vendorLines.join(' ').trim() || 'Unknown';
-  // Fix word-order: Home Depot OCR splits across lines, rejoin correctly
-  if (/depot/i.test(vendor) && /home/i.test(vendor)) {
-    vendor = 'THE HOME DEPOT';
-  }
+  // Home Depot OCR splits "THE HOME DEPOT" across lines into "THE DEPOT HOME" — fix it
+  if (/home/i.test(vendor) && /depot/i.test(vendor)) vendor = 'THE HOME DEPOT';
 
-  // Date: prefer "Ordered" date, skip "Delivered"
+  // Date: prefer "Ordered", skip "Delivered"
   let orderDate = null;
   const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
   if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
   if (!orderDate) {
-    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
-    for (const m of allDates) {
+    for (const m of [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)]) {
       const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
       if (before.includes('deliver')) continue;
       const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
     }
   }
 
-  // Extract labeled subtotal/tax/total
+  // Labeled subtotal/tax/total
   let subtotal = null, tax = null, total = null;
-  const subLabelM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const taxLabelM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const totLabelM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  if (subLabelM) subtotal = parseFloat(subLabelM[1].replace(/,/g,''));
-  if (taxLabelM) tax = parseFloat(taxLabelM[1].replace(/,/g,''));
-  if (totLabelM) total = parseFloat(totLabelM[1].replace(/,/g,''));
+  const subM = text.match(/subtotal[\s\n:]+\$?([\d,]+\.\d{2})/i);
+  const taxM = text.match(/(?:sales\s+)?tax[\s\n:]+\$?([\d,]+\.\d{2})/i);
+  const totM = text.match(/(?:order\s+)?total[\s\n:]+\$?([\d,]+\.\d{2})/i);
+  if (subM) subtotal = parseFloat(subM[1].replace(/,/g,''));
+  if (taxM) tax = parseFloat(taxM[1].replace(/,/g,''));
+  if (totM) total = parseFloat(totM[1].replace(/,/g,''));
 
-  // Home Depot "Pre Tax Amount" column format
+  // Home Depot "Pre Tax Amount" column: amounts appear as unit_price, 0.00, 0.00, pretax_total
   if (!subtotal) {
-    const preTaxIdx = text.indexOf('Pre Tax Amount');
-    if (preTaxIdx !== -1) {
-      const afterHeader = text.substring(preTaxIdx);
-      const footerIdx = afterHeader.search(/SKU|Printed On|Page \d/i);
-      const itemSection = footerIdx > -1 ? afterHeader.substring(0, footerIdx) : afterHeader;
-      const amounts = [...itemSection.matchAll(/\$([\d,]+\.\d{2})/g)]
+    const ptIdx = text.indexOf('Pre Tax Amount');
+    if (ptIdx !== -1) {
+      const after = text.substring(ptIdx);
+      const footerIdx = after.search(/SKU|Printed On|Page \d/i);
+      const section = footerIdx > -1 ? after.substring(0, footerIdx) : after;
+      const amounts = [...section.matchAll(/\$([\d,]+\.\d{2})/g)]
         .map(m => parseFloat(m[1].replace(/,/g,'')))
         .filter(a => a > 0);
       if (amounts.length > 0) subtotal = amounts[amounts.length - 1];
     }
   }
 
-  // Infer tax from total if labeled total exists
-  if (!tax && total && subtotal) tax = Math.round((total - subtotal) * 100) / 100;
-
-  // Infer total from subtotal + tax
+  // Infer missing values
+  if (!tax && subtotal && total) tax = Math.round((total - subtotal) * 100) / 100;
   if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
 
-  // Find best item description — look for product description lines
-  // These are long lines appearing after the column headers, before the amounts
-  const BAD_DESC = /^(the|order|invoice|ship|qty|unit price|discount|net unit|pre tax|sku|printed|page|\d|hardware$|oconnor|management llc)/i;
+  // Item description: find best product line after "Pre Tax Amount" header
   let itemDesc = vendor;
-  // Find lines between "Pre Tax Amount" header and the first $ amount after it
-  const preTaxIdx2 = text.indexOf('Pre Tax Amount');
-  if (preTaxIdx2 !== -1) {
-    const section = text.substring(preTaxIdx2);
-    const sectionLines = section.split('\n').map(l=>l.trim()).filter(Boolean);
-    for (const l of sectionLines.slice(1)) { // skip "Pre Tax Amount" itself
-      if (/^\$/.test(l) || /^\d+$/.test(l)) break; // hit the amounts
-      if (l.length > 15 && !BAD_DESC.test(l)) { itemDesc = l; break; }
-    }
-  }
-
-  // Build single line item using subtotal (pre-tax amount)
-  const itemLines = subtotal ? [{name: itemDesc, price: subtotal}] : [];
-
-  console.log('parseOCR — vendor:', vendor, 'date:', orderDate,
-    'items:', JSON.stringify(itemLines), 'subtotal:', subtotal, 'tax:', tax, 'total:', total);
-  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
-}
-
-function renderPDF(dataUrl, resolve, reject) {
-  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
-    pdf.getPage(1).then(page => {
-      const scale = 1.5;
-      const viewport = page.getViewport({scale});
-      const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
-      }).catch(reject);
-    }).catch(reject);
-  }).catch(reject);
-}
-
-// ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
-
-function parseOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-
-  // Vendor: join first meaningful lines before order/invoice info
-  const skipStart = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
-  let vendorLines = [];
-  for (const line of lines) {
-    if (skipStart.test(line)) break;
-    vendorLines.push(line);
-    if (vendorLines.length >= 3) break;
-  }
-  const vendor = vendorLines.join(' ').trim() || 'Unknown';
-
-  // Date: prefer "Ordered" date, skip "Delivered"
-  let orderDate = null;
-  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  if (!orderDate) {
-    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
-    for (const m of allDates) {
-      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
-      if (before.includes('deliver')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
-    }
-  }
-
-  // Extract ALL dollar amounts in document order
-  const allAmounts = [];
-  const amountRe = /\$([\d,]+\.\d{2})/g;
-  let am;
-  while ((am = amountRe.exec(text)) !== null) {
-    allAmounts.push(parseFloat(am[1].replace(/,/g,'')));
-  }
-  const nonZeroAmounts = allAmounts.filter(a => a > 0);
-
-  // Try labeled extraction for subtotal/tax/total
-  let subtotal = null, tax = null, total = null;
-  const subLabelM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const taxLabelM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const totLabelM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  if (subLabelM) subtotal = parseFloat(subLabelM[1].replace(/,/g,''));
-  if (taxLabelM) tax = parseFloat(taxLabelM[1].replace(/,/g,''));
-  if (totLabelM) total = parseFloat(totLabelM[1].replace(/,/g,''));
-
-  // Home Depot style: look for "Pre Tax Amount" header, then find the column value
-  // The amounts after the column headers appear as: unit_price, discount, net_unit, pre_tax
-  // We want the pre_tax value which is the last amount in the item row
-  if (!subtotal) {
-    const preTaxIdx = text.indexOf('Pre Tax Amount');
-    if (preTaxIdx !== -1) {
-      // Find all amounts after "Pre Tax Amount" header, before any SKU/footer
-      const afterHeader = text.substring(preTaxIdx);
-      const skuIdx = afterHeader.search(/SKU|Printed On|Page \d/i);
-      const itemSection = skuIdx > -1 ? afterHeader.substring(0, skuIdx) : afterHeader;
-      const itemAmounts = [];
-      const iar = /\$([\d,]+\.\d{2})/g;
-      let im;
-      while ((im = iar.exec(itemSection)) !== null) {
-        itemAmounts.push(parseFloat(im[1].replace(/,/g,'')));
-      }
-      // In HD format: unit_price, discount(0), net_unit(0), pre_tax_total
-      // The last non-zero amount in the item row is the pre-tax total
-      const nonZero = itemAmounts.filter(a => a > 0);
-      if (nonZero.length > 0) {
-        subtotal = nonZero[nonZero.length - 1];
+  const ptIdx2 = text.indexOf('Pre Tax Amount');
+  if (ptIdx2 !== -1) {
+    const sectionLines = text.substring(ptIdx2).split('\n').map(l=>l.trim()).filter(Boolean);
+    for (const l of sectionLines.slice(1)) {
+      if (/^[\$\d]/.test(l) || /^(qty|sku|printed|page|hardware$|\d+$)/i.test(l)) break;
+      if (l.length > 10 && !/^(pre tax|unit price|discount|net unit)/i.test(l)) {
+        itemDesc = l; break;
       }
     }
-  }
-
-  // If still no subtotal, use the largest amount as best guess
-  if (!subtotal && nonZeroAmounts.length > 0) {
-    subtotal = Math.max(...nonZeroAmounts);
-  }
-
-  // Find item description — look for long descriptive lines before the amounts
-  let itemDesc = vendor;
-  const descCandidates = lines.filter(l =>
-    l.length > 15 &&
-    !/^(the|order|invoice|ship|qty|unit|discount|net|pre tax|sku|printed|page|\d)/i.test(l) &&
-    !/^[\$\d]/.test(l) &&
-    !['oconnor','management','item description','hardware'].includes(l.toLowerCase())
-  );
-  if (descCandidates.length > 0) {
-    // Pick the most descriptive line (longest one that looks like a product)
-    const productLine = descCandidates.sort((a,b) => b.length - a.length)[0];
-    if (productLine && productLine.length > 10) itemDesc = productLine;
   }
 
   const itemLines = subtotal ? [{name: itemDesc, price: subtotal}] : [];
 
   console.log('parseOCR — vendor:', vendor, 'date:', orderDate,
-    'items:', JSON.stringify(itemLines), 'subtotal:', subtotal, 'tax:', tax, 'total:', total);
+    'items:', itemLines.length, 'subtotal:', subtotal, 'tax:', tax);
   return { vendor, orderDate, items: itemLines, subtotal, tax, total };
 }
+
+
+async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  console.log('Vision: HTTP status:', r.status);
+  const d = await r.json();
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
+}
+
+
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -814,122 +675,7 @@ async function visionOCR(b64) {
   return text;
 }
 
-function parseOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  // Vendor: join first meaningful lines
-  const skipStart = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
-  let vendorLines = [];
-  for (const line of lines) {
-    if (skipStart.test(line)) break;
-    vendorLines.push(line);
-    if (vendorLines.length >= 3) break;
-  }
-  const vendor = vendorLines.join(' ').trim() || 'Unknown';
-
-  // Date: prefer "Ordered" date, skip "Delivered"
-  let orderDate = null;
-  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  if (!orderDate) {
-    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
-    for (const m of allDates) {
-      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
-      if (before.includes('deliver')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
-    }
-  }
-
-  // Extract ALL dollar amounts from the text in order
-  const allAmounts = [];
-  const amountRe = /\$([\d,]+\.\d{2})/g;
-  let am;
-  while ((am = amountRe.exec(text)) !== null) {
-    allAmounts.push({ val: parseFloat(am[1].replace(/,/g,'')), index: am.index });
-  }
-
-  // Also find bare decimal amounts on their own lines (e.g. Home Depot table format)
-  // e.g. lines that are just "319.98" or "$319.98"
-  const bareAmountRe = /^\$?([\d,]+\.\d{2})$/;
-  const lineAmounts = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(bareAmountRe);
-    if (m) lineAmounts.push({ val: parseFloat(m[1].replace(/,/g,'')), lineIdx: i });
-  }
-
-  // Try labeled extraction first
-  let subtotal = null, tax = null, total = null;
-  const subM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const taxM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const totM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  if (subM) subtotal = parseFloat(subM[1].replace(/,/g,''));
-  if (taxM) tax = parseFloat(taxM[1].replace(/,/g,''));
-  if (totM) total = parseFloat(totM[1].replace(/,/g,''));
-
-  // Home Depot / unlabeled format: look for summary block near bottom of receipt
-  // Pattern: find the largest non-zero amount — that's likely subtotal or total
-  // Then find tax as a small amount near the end
-  if (!subtotal && !tax) {
-    // Find "Subtotal", "Sales Tax", "Order Total" labels in lines
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i].toLowerCase();
-      const nextLine = lines[i+1] || '';
-      const nextAmt = nextLine.match(/^\$?([\d,]+\.\d{2})$/);
-      if (nextAmt) {
-        const val = parseFloat(nextAmt[1].replace(/,/g,''));
-        if (l.includes('subtotal')) subtotal = val;
-        else if (l.includes('tax')) tax = val;
-        else if (l.includes('total') && !l.includes('subtotal')) total = val;
-      }
-    }
-  }
-
-  // Still no subtotal? Try to infer from the amounts
-  // Strategy: collect all unique amounts, the order total is usually the last/largest
-  // The pre-tax subtotal is total - tax
-  if (!subtotal && !tax && allAmounts.length > 0) {
-    // Find the largest amount — likely the order total
-    const sorted = [...allAmounts].sort((a,b) => b.val - a.val);
-    const largest = sorted[0]?.val;
-    // Find a small amount that could be tax (< 10% of largest, > 0)
-    const possibleTax = sorted.find(a => a.val > 0 && a.val < largest * 0.15 && a.val !== largest);
-    if (largest && possibleTax) {
-      total = largest;
-      tax = possibleTax.val;
-      subtotal = Math.round((total - tax) * 100) / 100;
-    } else if (largest) {
-      total = largest;
-    }
-  }
-
-  // Line items: find the pre-tax item amount(s)
-  // For Home Depot: item amounts appear BEFORE the summary block
-  // The "Pre Tax Amount" column value is what we want as the line item
-  const preTaxM = text.match(/Pre Tax Amount[\s\S]*?\n\$?([\d,]+\.\d{2})/i);
-  let itemLines = [];
-
-  if (preTaxM) {
-    // Found explicit pre-tax amount
-    const preTaxAmt = parseFloat(preTaxM[1].replace(/,/g,''));
-    // Find description near "Pre Tax Amount"
-    const descM = text.match(/([A-Z][^\n]{10,60})\n(?:[^\n]+\n){0,5}[^\n]*Pre Tax/i);
-    const desc = descM ? descM[1].trim() : vendor;
-    itemLines = [{name: desc, price: preTaxAmt}];
-    subtotal = subtotal || preTaxAmt;
-  } else if (subtotal) {
-    // Use subtotal as single item with vendor as description
-    itemLines = [{name: vendor, price: subtotal}];
-  } else if (total) {
-    itemLines = [{name: vendor, price: total}];
-    total = null; // treat it as subtotal since we have no tax info
-  }
-
-  // Clean up: if tax equals one of our line items, remove it from items
-  if (tax) itemLines = itemLines.filter(i => Math.abs(i.price - tax) > 0.01);
-
-  console.log('parseOCR — vendor:', vendor, 'date:', orderDate, 'items:', JSON.stringify(itemLines), 'subtotal:', subtotal, 'tax:', tax, 'total:', total);
-  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
-}
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -969,104 +715,7 @@ async function visionOCR(b64) {
   return text;
 }
 
-function parseOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  // Vendor: join first meaningful lines before order/invoice info
-  const skipPatterns = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
-  let vendorLines = [];
-  for (const line of lines) {
-    if (skipPatterns.test(line)) break;
-    vendorLines.push(line);
-    if (vendorLines.length >= 3) break;
-  }
-  const vendor = vendorLines.join(' ').trim() || 'Unknown';
-
-  // Date: prefer "Ordered" date, skip "Delivered"
-  let orderDate = null;
-  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  if (!orderDate) {
-    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
-    for (const m of allDates) {
-      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
-      if (before.includes('deliver')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
-    }
-  }
-
-  // Extract key summary amounts first so we can exclude them from line items
-  const subM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const taxM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const totM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const subtotal = subM ? parseFloat(subM[1].replace(/,/g,'')) : null;
-  const tax = taxM ? parseFloat(taxM[1].replace(/,/g,'')) : null;
-  const total = totM ? parseFloat(totM[1].replace(/,/g,'')) : null;
-
-  // Build a set of amounts to exclude (summary rows)
-  const excludeAmounts = new Set();
-  if (tax) excludeAmounts.add(tax.toFixed(2));
-  if (total) excludeAmounts.add(total.toFixed(2));
-  // Also exclude 0.00 values
-  excludeAmounts.add('0.00');
-
-  // Bad description fragments to skip
-  const BAD_DESCS = ['subtotal','total','tax','shipping','discount','delivery','charge',
-    'unit price','net unit','page','sku','qty','quantity','item description',
-    'ordered','delivered','ship','invoice','order #','printed'];
-
-  // Find all dollar amounts with context
-  const priceRe = /\$([\d,]+\.\d{2})/g;
-  const candidates = [];
-  let pm;
-  while ((pm = priceRe.exec(text)) !== null) {
-    const price = parseFloat(pm[1].replace(/,/g,''));
-    if (price <= 0 || price > 50000) continue;
-    if (excludeAmounts.has(price.toFixed(2))) continue;
-
-    // Get lines before this price for description
-    const before = text.substring(Math.max(0, pm.index-300), pm.index);
-    const beforeLines = before.split('\n').map(l=>l.trim()).filter(Boolean);
-
-    let desc = '';
-    for (let i = beforeLines.length-1; i >= 0; i--) {
-      const l = beforeLines[i];
-      if (!l || /^[\$\d]/.test(l)) continue;
-      if (BAD_DESCS.some(w => l.toLowerCase().includes(w))) continue;
-      if (l.length < 3) continue;
-      desc = l; break;
-    }
-    if (desc) candidates.push({name: desc, price, key: price.toFixed(2)});
-  }
-
-  // If we have a subtotal, find the item that best matches it
-  // For multi-qty receipts: subtotal = qty * unit_price, so unit_price will also appear
-  // We want the subtotal-matching item OR if no subtotal, the largest non-excluded price
-  let itemLines = [];
-  const seenKeys = new Set();
-
-  if (subtotal) {
-    // Find item whose price equals subtotal (the pre-tax line total)
-    const match = candidates.find(c => Math.abs(c.price - subtotal) < 0.01);
-    if (match && !BAD_DESCS.some(w => match.name.toLowerCase().includes(w))) {
-      itemLines = [{name: match.name, price: match.price}];
-    } else {
-      // Use subtotal as a single item
-      itemLines = [{name: vendor, price: subtotal}];
-    }
-  } else {
-    // No subtotal — dedupe and use all valid candidates
-    for (const c of candidates) {
-      if (seenKeys.has(c.key)) continue;
-      if (BAD_DESCS.some(w => c.name.toLowerCase().includes(w))) continue;
-      seenKeys.add(c.key);
-      itemLines.push({name: c.name, price: c.price});
-    }
-  }
-
-  console.log('parseOCR — vendor:', vendor, 'date:', orderDate, 'items:', JSON.stringify(itemLines), 'sub:', subtotal, 'tax:', tax, 'total:', total);
-  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
-}
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -1106,95 +755,47 @@ async function visionOCR(b64) {
   return text;
 }
 
-function parseOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  // Vendor: join first lines until we hit something that looks like an address/order number
-  let vendorLines = [];
-  const skipPatterns = /^(order|invoice|ship|#|\d{4,}|oconnor coastal)/i;
-  for (const line of lines) {
-    if (skipPatterns.test(line)) break;
-    vendorLines.push(line);
-    if (vendorLines.length >= 3) break;
-  }
-  const vendor = vendorLines.join(' ').trim() || 'Unknown';
 
-  // Date: prefer "Ordered" date, ignore "Delivered"
-  let orderDate = null;
-  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  if (!orderDate) {
-    // look for date pattern NOT preceded by "delivered"
-    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
-    for (const m of allDates) {
-      const before = text.substring(Math.max(0, m.index - 30), m.index).toLowerCase();
-      if (before.includes('delivered')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
-    }
-  }
-  if (!orderDate) {
-    const isoM = text.match(/(\d{4}-\d{2}-\d{2})/);
-    if (isoM) { const d = new Date(isoM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  }
-
-  // Prices: find all dollar amounts in the text
-  // Strategy: find lines with prices, look back for a description
-  const SKIP_WORDS = ['subtotal','total','tax','shipping','discount','delivery','charge','unit price','net unit'];
-  const priceRe = /\$([\d,]+\.\d{2})/g;
-  const allPrices = [];
-  let pm;
-  while ((pm = priceRe.exec(text)) !== null) {
-    const price = parseFloat(pm[1].replace(/,/g,''));
-    if (price <= 0 || price > 50000) continue;
-    // Get context before this price
-    const before = text.substring(Math.max(0, pm.index - 200), pm.index);
-    const beforeLines = before.split('\n').map(l=>l.trim()).filter(Boolean);
-    // Find last meaningful description line
-    let desc = '';
-    for (let i = beforeLines.length - 1; i >= 0; i--) {
-      const l = beforeLines[i];
-      if (!l || /^[\d\$]/.test(l)) continue;
-      if (SKIP_WORDS.some(w => l.toLowerCase().includes(w))) continue;
-      if (/^(qty|quantity|item|description|sku|ordered|delivered|ship)/i.test(l)) continue;
-      desc = l; break;
-    }
-    if (desc) allPrices.push({desc, price, index: pm.index});
-  }
-
-  // Deduplicate — for Home Depot style receipts, the pre-tax line amount is what we want
-  // Group by similar prices and take the largest unique item amounts
-  const itemLines = [];
-  const seenPrices = new Set();
-  // Find the subtotal to use as a ceiling for individual items
-  const subM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const taxM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const totM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
-  const subtotal = subM ? parseFloat(subM[1].replace(/,/g,'')) : null;
-  const tax = taxM ? parseFloat(taxM[1].replace(/,/g,'')) : null;
-  const total = totM ? parseFloat(totM[1].replace(/,/g,'')) : null;
-
-  // If we have subtotal/total, use those to identify line item prices
-  for (const p of allPrices) {
-    const key = p.price.toFixed(2);
-    if (seenPrices.has(key)) continue;
-    // Skip if this price equals subtotal, tax, or total
-    if (subtotal && Math.abs(p.price - subtotal) < 0.01) continue;
-    if (tax && Math.abs(p.price - tax) < 0.01) continue;
-    if (total && Math.abs(p.price - total) < 0.01) continue;
-    if (SKIP_WORDS.some(w => p.desc.toLowerCase().includes(w))) continue;
-    seenPrices.add(key);
-    itemLines.push({name: p.desc, price: p.price});
-  }
-
-  // If no line items found but we have a subtotal, use that as single item
-  if (itemLines.length === 0 && subtotal) {
-    itemLines.push({name: vendor, price: subtotal});
-  }
-
-  console.log('parseOCR result — vendor:', vendor, 'date:', orderDate, 'items:', itemLines.length, 'subtotal:', subtotal, 'tax:', tax);
-
-  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
+function renderPDF(dataUrl, resolve, reject) {
+  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
+    pdf.getPage(1).then(page => {
+      const scale = 1.5;
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      page.render({canvasContext: ctx, viewport}).promise.then(() => {
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
+        resolve(jpegDataUrl.split(',')[1]);
+      }).catch(reject);
+    }).catch(reject);
+  }).catch(reject);
 }
+
+// ── VISION OCR ────────────────────────────────────────────
+async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  console.log('Vision: HTTP status:', r.status);
+  const d = await r.json();
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
+}
+
+
 
 // ── FILE UPLOAD ───────────────────────────────────────────
 async function handleFileUpload(e) {
