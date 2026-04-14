@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STR Expense Tracker</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,300&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #F7F5F0; --surface: #FFFFFF; --surface2: #F0EDE6; --border: #D8D4CC;
+    --text: #1A1815; --text2: #6B6760; --text3: #9E9A94;
+    --accent: #2C5F2E; --accent-light: #E8F0E8;
+    --accent2: #8B4513; --accent2-light: #F5EDE5;
+    --danger: #B22222; --danger-light: #FDF0F0;
+    --info: #1A3A5C; --info-light: #EBF1F8;
+    --pearl: #7B3F00; --pearl-bg: #FDF6EE;
+    --jays: #1B4D3E; --jays-bg: #EFF7F4;
+    --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
+  }
+  body { font-family: 'DM Mono', monospace; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 13px; line-height: 1.6; }
+  .app-shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 24px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+  .sidebar-brand { padding: 0 20px 20px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .brand-name { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 500; letter-spacing: -0.3px; }
+  .brand-sub { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.8px; margin-top: 2px; }
+  .auth-bar { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .auth-avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; color: var(--text2); overflow: hidden; flex-shrink: 0; }
+  .auth-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .auth-name { font-size: 11px; color: var(--text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .auth-btn { font-size: 11px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text2); cursor: pointer; white-space: nowrap; font-family: 'DM Mono', monospace; }
+  .auth-btn.signin { background: var(--accent); border-color: var(--accent); color: white; }
+  .drive-status { font-size: 10px; padding: 4px 20px 8px; color: var(--text3); display: flex; align-items: center; gap: 5px; }
+  .drive-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+  .drive-dot.on { background: var(--accent); }
+  .nav-section { padding: 8px 12px 4px; }
+  .nav-label { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 1px; padding: 0 8px; margin-bottom: 4px; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; cursor: pointer; color: var(--text2); font-size: 13px; transition: all 0.15s; border: none; background: none; width: 100%; text-align: left; font-family: 'DM Mono', monospace; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--accent-light); color: var(--accent); font-weight: 500; }
+  .nav-icon { width: 15px; height: 15px; opacity: 0.65; flex-shrink: 0; }
+  .nav-item.active .nav-icon { opacity: 1; }
+  .prop-badges { padding: 16px 20px; margin-top: auto; border-top: 1px solid var(--border); }
+  .prop-badge { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; margin-bottom: 6px; }
+  .prop-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .main { padding: 32px 40px; max-width: 900px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .page-title { font-family: 'Fraunces', serif; font-size: 26px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 4px; }
+  .page-sub { font-size: 12px; color: var(--text3); margin-bottom: 24px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text3); margin-bottom: 14px; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text3); margin-bottom: 5px; }
+  input[type="text"], input[type="date"], input[type="number"], select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace;
+    font-size: 13px; outline: none; transition: border-color 0.15s; appearance: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); background: var(--surface); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .prop-sel { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+  .prop-btn { padding: 10px 6px; border-radius: 8px; border: 1.5px solid var(--border); background: var(--surface); cursor: pointer; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text2); text-align: center; transition: all 0.15s; }
+  .prop-btn:hover { border-color: var(--text2); }
+  .sel-pearl { background: var(--pearl-bg); border-color: var(--pearl); color: var(--pearl); font-weight: 500; }
+  .sel-jays { background: var(--jays-bg); border-color: var(--jays); color: var(--jays); font-weight: 500; }
+  .sel-both { background: #F0F4F0; border-color: #556B2F; color: #556B2F; font-weight: 500; }
+  .line-item { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 7px; margin-bottom: 4px; border: 1px solid var(--border); background: var(--bg); }
+  .line-item.on { background: var(--accent-light); border-color: #B8D4B8; }
+  .line-item.off { opacity: 0.4; }
+  .toggle-btn { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--border); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text3); flex-shrink: 0; }
+  .toggle-btn.on { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn { padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: 'DM Mono', monospace; font-size: 13px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 7px; }
+  .btn:hover { background: var(--surface2); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn-primary:hover { background: #234F25; }
+  .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+  .info-box { background: var(--accent-light); border: 1px solid #B8D4B8; border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #234F25; margin: 10px 0; }
+  .warn-box { background: var(--accent2-light); border: 1px solid #D4A88A; border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--accent2); margin: 10px 0; }
+  .empty-state { text-align: center; padding: 28px; color: var(--text3); font-size: 12px; }
+  .upload-zone { border: 2px dashed var(--border); border-radius: 10px; padding: 28px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg); margin-bottom: 12px; }
+  .upload-zone:hover { border-color: var(--accent); background: var(--accent-light); }
+  .upload-icon { width: 34px; height: 34px; margin: 0 auto 10px; opacity: 0.35; }
+  .ai-status { display: none; align-items: center; gap: 10px; padding: 10px 14px; background: var(--info-light); border: 1px solid #B8CDE0; border-radius: 8px; margin-bottom: 12px; font-size: 12px; color: var(--info); }
+  .ai-status.on { display: flex; }
+  .spinner { width: 15px; height: 15px; border: 2px solid #B8CDE0; border-top-color: var(--info); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .receipt-banner { background: var(--info-light); border: 1px solid #B8CDE0; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; display: none; }
+  .drive-filing { display: none; align-items: center; gap: 10px; padding: 10px 14px; background: var(--accent-light); border: 1px solid #B8D4B8; border-radius: 8px; margin-top: 10px; font-size: 12px; color: var(--accent); }
+  .drive-filing.on { display: flex; }
+  .drive-filing.err { background: var(--danger-light); border-color: #E8AAAA; color: var(--danger); }
+  .entry-table { width: 100%; border-collapse: collapse; }
+  .entry-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text3); padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .entry-table td { padding: 9px 10px; border-bottom: 1px solid var(--surface2); font-size: 12px; vertical-align: middle; }
+  .entry-table tr:last-child td { border-bottom: none; }
+  .entry-table tr:hover td { background: var(--bg); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 500; }
+  .pill-pearl { background: var(--pearl-bg); color: var(--pearl); }
+  .pill-jays { background: var(--jays-bg); color: var(--jays); }
+  .cat-tag { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 11px; background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+  .sum-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--surface2); font-size: 12px; }
+  .sum-row:last-child { border-bottom: none; }
+  .sum-val { font-weight: 500; font-size: 14px; color: var(--accent); }
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text3); margin-bottom: 6px; }
+  .stat-val { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 300; }
+  .rec-item { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); margin-bottom: 8px; }
+  .file-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 10px 14px; font-size: 13px; color: var(--accent); font-weight: 500; margin-top: 8px; word-break: break-all; }
+  .folder-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text2); }
+  .folder-item:hover { background: var(--surface2); color: var(--text); }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--text); color: white; padding: 12px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: all 0.2s; pointer-events: none; z-index: 999; max-width: 320px; }
+  .toast.on { opacity: 1; transform: translateY(0); }
+  @media (max-width: 700px) {
+    .app-shell { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .main { padding: 20px; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .row2, .row3, .prop-sel { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+
+<nav class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-name">STR Expenses</div>
+    <div class="brand-sub">2026 Tax Year</div>
+  </div>
+
+  <div class="auth-bar">
+    <div class="auth-avatar" id="authAvatar">?</div>
+    <div class="auth-name" id="authName">Not signed in</div>
+    <button class="auth-btn signin" id="authBtn" onclick="handleAuth()">Sign in</button>
+  </div>
+  <div class="drive-status">
+    <div class="drive-dot" id="driveDot"></div>
+    <span id="driveStatusText">Google Drive not connected</span>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Enter</div>
+    <button class="nav-item active" id="nav-add" onclick="showPage('add')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
+      Add Expense
+    </button>
+    <button class="nav-item" id="nav-recurring" onclick="showPage('recurring')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 1 1 8 2"/><polyline points="14 2 14 6 10 6"/></svg>
+      Recurring
+    </button>
+  </div>
+  <div class="nav-section">
+    <div class="nav-label">Review</div>
+    <button class="nav-item" id="nav-history" onclick="showPage('history')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="11" rx="2"/><line x1="1" y1="7" x2="15" y2="7"/></svg>
+      History
+    </button>
+    <button class="nav-item" id="nav-summary" onclick="showPage('summary')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1 12 5 7 8 10 11 5 15 8"/></svg>
+      Summary
+    </button>
+  </div>
+  <div class="nav-section">
+    <div class="nav-label">Tools</div>
+    <button class="nav-item" id="nav-settings" onclick="showPage('settings')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2"/></svg>
+      Settings
+    </button>
+    <button class="nav-item" id="nav-export" onclick="showPage('export')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 10v3a1 1 0 01-1 1H4a1 1 0 01-1-1v-3"/><polyline points="5 6 8 9 11 6"/><line x1="8" y1="9" x2="8" y2="1"/></svg>
+      Export CSV
+    </button>
+  </div>
+
+  <div class="prop-badges">
+    <div class="prop-badge" style="background:var(--pearl-bg);">
+      <div class="prop-dot" style="background:var(--pearl);"></div>
+      <div><div style="font-size:12px;color:var(--pearl);font-weight:500;">Pearl in the Pines</div><div style="font-size:10px;color:var(--text3);">Sch C — owner</div></div>
+    </div>
+    <div class="prop-badge" style="background:var(--jays-bg);">
+      <div class="prop-dot" style="background:var(--jays);"></div>
+      <div><div style="font-size:12px;color:var(--jays);font-weight:500;">Jay's Retreat</div><div style="font-size:10px;color:var(--text3);">Sch E — managed</div></div>
+    </div>
+  </div>
+</nav>
+
+<main class="main">
+
+  <!-- ADD -->
+  <div id="page-add" class="page active">
+    <div class="page-title">Add Expense</div>
+    <div class="page-sub">Upload a receipt or enter manually — all fields work without sign-in</div>
+
+    <div class="card">
+      <div class="card-title">Step 1 — Receipt (optional)</div>
+      <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+        <svg class="upload-icon" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="30" height="26" rx="3"/><line x1="3" y1="14" x2="33" y2="14"/><line x1="18" y1="21" x2="18" y2="29"/><line x1="13" y1="25" x2="23" y2="25"/></svg>
+        <div style="font-size:13px;color:var(--text2);">Upload receipt image or PDF</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;" id="uploadHint">Sign in with Google to enable AI scanning &amp; auto-filing to Drive</div>
+      </div>
+      <input type="file" id="fileInput" accept="image/*,.pdf" style="display:none" onchange="handleFileUpload(event)">
+      <div class="ai-status" id="aiStatus"><div class="spinner"></div><span id="aiStatusText">Scanning receipt...</span></div>
+      <div class="receipt-banner" id="receiptBanner">
+        <div style="font-family:'Fraunces',serif;font-size:15px;color:var(--info);" id="bannerVendor"></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;" id="bannerDate"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 2 — Details</div>
+      <div class="row2">
+        <div><label>Order Date</label><input type="date" id="expDate"/></div>
+        <div><label>Vendor</label><input type="text" id="expVendor" placeholder="Home Depot, Amazon..."/></div>
+      </div>
+
+      <div class="row3" id="taxRow" style="display:none;">
+        <div><label>Receipt Subtotal ($)</label><input type="number" id="recSub" step="0.01" oninput="recalcTax()"/></div>
+        <div><label>Receipt Tax ($)</label><input type="number" id="recTax" step="0.01" oninput="recalcTax()"/></div>
+        <div><label>Tax Rate</label><input type="text" id="taxRate" readonly style="background:var(--surface2);color:var(--text2);"/></div>
+      </div>
+
+      <label style="margin-bottom:7px;">Line Items — uncheck non-deductible items</label>
+      <div id="lineItems"><div class="empty-state" style="padding:14px;">Upload a receipt or add items manually below</div></div>
+
+      <div class="row2" style="margin-top:10px;">
+        <div><label>Add Item</label><input type="text" id="newName" placeholder="Item description..."/></div>
+        <div><label>Amount ($)</label>
+          <div style="display:flex;gap:8px;"><input type="number" id="newAmt" step="0.01" placeholder="0.00" style="flex:1;"/><button class="btn btn-sm" onclick="addItem()">Add</button></div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="row2">
+        <div><label>Deductible Total (with proportional tax)</label>
+          <input type="number" id="expTotal" readonly style="background:var(--accent-light);font-weight:500;color:var(--accent);"/>
+        </div>
+        <div><label>Manual Total Override</label><input type="number" id="expOverride" step="0.01" placeholder="Enter if no line items..." oninput="handleOverride()"/></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 3 — Property & Category</div>
+      <label style="margin-bottom:7px;">Property</label>
+      <div class="prop-sel">
+        <button class="prop-btn" id="btnPearl" onclick="selProp('pearl')">Pearl in the Pines</button>
+        <button class="prop-btn" id="btnJays" onclick="selProp('jays')">Jay's Retreat</button>
+        <button class="prop-btn" id="btnBoth" onclick="selProp('both')">Both (50/50)</button>
+      </div>
+      <div class="row2">
+        <div id="pearlCatWrap" style="display:none;">
+          <label>Pearl Category (Sch C)</label>
+          <select id="pearlCat" onchange="updateCatPreview()">
+            <option value="">— select —</option>
+            <option>Advertising</option><option>Auto & travel</option><option>Cleaning and maintenance</option>
+            <option>Commissions and fees</option><option>Insurance</option><option>Legal and other professional fees</option>
+            <option>Management fees</option><option>Mortgage interest</option><option>Other interest</option>
+            <option>Repairs</option><option>Supplies</option><option>Taxes</option><option>Utilities</option>
+            <option>Asset</option><option>Other</option>
+          </select>
+        </div>
+        <div id="jaysCatWrap" style="display:none;">
+          <label>Jay's Category (Sch E)</label>
+          <select id="jaysCat" onchange="updateCatPreview()">
+            <option value="">— select —</option>
+            <option>Advertising</option><option>Auto and travel</option><option>Cleaning and maintenance</option>
+            <option>Commissions and fees</option><option>Contract labor</option><option>Insurance</option>
+            <option>Legal and professional services</option><option>Management fees</option><option>Other interest</option>
+            <option>Rent or lease</option><option>Repairs and maintenance</option><option>Supplies</option>
+            <option>Taxes</option><option>Utilities</option><option>Asset</option><option>Other</option>
+          </select>
+        </div>
+      </div>
+      <div id="catPreview" style="display:none;"><div class="info-box" id="catPreviewText"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 4 — Preview & Confirm</div>
+      <div id="entryPreview"><div class="empty-state">Fill in the form above to preview</div></div>
+      <div class="drive-filing" id="driveFiling"><div class="spinner" style="border-top-color:var(--accent);border-color:#B8D4B8;border-top-color:var(--accent);"></div><span id="driveFilingText"></span></div>
+      <div class="btn-row">
+        <button class="btn" onclick="clearForm()">Clear</button>
+        <button class="btn btn-primary" onclick="confirmEntry()">Confirm & Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RECURRING -->
+  <div id="page-recurring" class="page">
+    <div class="page-title">Recurring Expenses</div>
+    <div class="page-sub">Fixed monthly bills — one click to pre-populate</div>
+    <div class="card"><div class="card-title">Fixed Monthly Bills</div><div id="recList"></div></div>
+    <div class="card">
+      <div class="card-title">Add Recurring</div>
+      <div class="row3">
+        <div><label>Vendor</label><input type="text" id="rVendor" placeholder="T-Mobile..."/></div>
+        <div><label>Monthly Amount ($)</label><input type="number" id="rAmt" step="0.01" placeholder="0.00"/></div>
+        <div><label>Billing Day</label><input type="number" id="rDay" placeholder="18" min="1" max="31"/></div>
+      </div>
+      <div class="row2">
+        <div><label>Property</label><select id="rProp"><option value="both">Both (50/50)</option><option value="pearl">Pearl</option><option value="jays">Jay's</option></select></div>
+        <div><label>Category</label><input type="text" id="rCat" placeholder="Utilities..."/></div>
+      </div>
+      <div class="btn-row" style="justify-content:flex-start;"><button class="btn btn-primary" onclick="addRecurring()">Save</button></div>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div id="page-history" class="page">
+    <div class="page-title">Expense History</div>
+    <div class="page-sub">All entries for 2026</div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;gap:10px;">
+        <input type="text" id="hSearch" placeholder="Search..." onkeyup="renderHistory()" style="flex:1;"/>
+        <select id="hFilter" onchange="renderHistory()" style="width:auto;"><option value="">All</option><option value="Pearl">Pearl</option><option value="Jay">Jay's</option></select>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="entry-table">
+          <thead><tr><th>Date</th><th>Vendor</th><th>Property</th><th>Category</th><th style="text-align:right;">Amount</th><th>Receipt filed as</th><th></th></tr></thead>
+          <tbody id="hBody"><tr><td colspan="7"><div class="empty-state">No expenses yet</div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- SUMMARY -->
+  <div id="page-summary" class="page">
+    <div class="page-title">Summary</div>
+    <div class="page-sub">Year-to-date totals</div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Total</div><div class="stat-val" id="sTotal">$0</div></div>
+      <div class="stat-card"><div class="stat-label">Pearl</div><div class="stat-val" id="sPearl">$0</div></div>
+      <div class="stat-card"><div class="stat-label">Jay's</div><div class="stat-val" id="sJays">$0</div></div>
+      <div class="stat-card"><div class="stat-label">Entries</div><div class="stat-val" id="sCount">0</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div class="card"><div class="card-title">Pearl — Schedule C</div><div id="pearlBd"></div></div>
+      <div class="card"><div class="card-title">Jay's — Schedule E</div><div id="jaysBd"></div></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="page-settings" class="page">
+    <div class="page-title">Settings</div>
+    <div class="page-sub">Google Drive receipts folder</div>
+    <div class="card">
+      <div class="card-title">2026 Receipts Folder</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px;">When you confirm an expense with a receipt, the file is automatically renamed and moved here.</p>
+      <div style="margin-bottom:12px;"><label>Selected Folder</label><input type="text" id="folderDisplay" readonly placeholder="No folder selected" style="background:var(--surface2);"/></div>
+      <button class="btn" onclick="pickFolder()">Browse Drive Folders</button>
+      <div id="folderList" style="margin-top:12px;"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">File Naming Format</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:8px;">Receipts are automatically renamed on confirm.</p>
+      <div class="file-preview">4.5.26_Home_Depot.pdf</div>
+      <p style="font-size:11px;color:var(--text3);margin-top:6px;">Format: M.D.YY_Vendor.ext</p>
+    </div>
+    <div class="card">
+      <div class="card-title">No-Receipt Vendors</div>
+      <div style="font-size:12px;color:var(--text2);line-height:2.2;">
+        <div>• T-Mobile — t-mobile.com account if audited</div>
+        <div>• Pricelabs — pricelabs.co account if audited</div>
+        <div>• Jim OConnor (mortgage) — lender portal</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- EXPORT -->
+  <div id="page-export" class="page">
+    <div class="page-title">Export CSV</div>
+    <div class="page-sub">Download to paste into your Google Sheet</div>
+    <div class="card">
+      <div class="warn-box">Columns: Date, Description, Account, Expense — matches your "Expense Tracker 26" tab exactly.</div>
+      <div class="btn-row" style="justify-content:flex-start;margin-top:12px;">
+        <button class="btn btn-primary" onclick="exportCSV()">Download CSV</button>
+        <button class="btn" onclick="copyCSV()">Copy to clipboard</button>
+      </div>
+      <div style="margin-top:14px;font-size:12px;color:var(--text3);" id="exportStats"></div>
+    </div>
+  </div>
+
+</main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleusercontent.com';
+const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/cloud-platform';
+
+let entries = JSON.parse(localStorage.getItem('str_entries_26') || '[]');
+let items = [], selProp = null, taxRate = 0;
+let pendingFile = null, pendingFileName = null;
+let token = null, folderIdSaved = localStorage.getItem('str_fid') || null, folderNameSaved = localStorage.getItem('str_fname') || null;
+
+const REC_DEF = [
+  {vendor:'T-Mobile', amount:36.60, day:18, prop:'both', cat:'Utilities'},
+  {vendor:'Pricelabs', amount:18.54, day:3, prop:'both', cat:'Legal and professional services'},
+  {vendor:'Jim OConnor', amount:1406.59, day:3, prop:'pearl', cat:'Mortgage interest'}
+];
+let recs = JSON.parse(localStorage.getItem('str_recs') || JSON.stringify(REC_DEF));
+
+const VCATS = {
+  'marcela castro':{pearl:'Cleaning and maintenance',jays:'Contract labor'},
+  'santiago morente':{pearl:'Cleaning and maintenance',jays:'Contract labor'},
+  't-mobile':{pearl:'Utilities',jays:'Utilities'},
+  'tmobile':{pearl:'Utilities',jays:'Utilities'},
+  'pricelabs':{pearl:'Legal and other professional fees',jays:'Legal and professional services'},
+  'jim oconnor':{pearl:'Mortgage interest',jays:'Commissions and fees'},
+  'anec':{pearl:'Utilities',jays:'Utilities'},
+  'town of ci':{pearl:'Utilities',jays:'Utilities'},
+  'town of chincoteague':{pearl:'Utilities',jays:'Utilities'},
+  'amazon':{pearl:'Supplies',jays:'Supplies'},
+  'walmart':{pearl:'Supplies',jays:'Supplies'},
+  'sams club':{pearl:'Supplies',jays:'Supplies'},
+  'sam\'s club':{pearl:'Supplies',jays:'Supplies'},
+  'home depot':{pearl:'Supplies',jays:'Supplies'},
+  'harbor freight':{pearl:'Supplies',jays:'Supplies'},
+  'ebay':{pearl:'Supplies',jays:'Supplies'},
+  'canva':{pearl:'Advertising',jays:'Advertising'},
+  'sunbelt rentals':{pearl:'Cleaning and maintenance',jays:'Rent or lease'},
+  'accomack county':{pearl:'Taxes',jays:'Taxes'},
+  'county of accomack':{pearl:'Taxes',jays:'Taxes'},
+  'windsor mt joy':{pearl:'Insurance',jays:'Insurance'},
+};
+
+// ── AUTH ──────────────────────────────────────────────────
+function loadGIS() {
+  return new Promise(res => {
+    if (window.google?.accounts) { res(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = res;
+    document.head.appendChild(s);
+  });
+}
+
+async function handleAuth() {
+  if (token) { token = null; updateAuthUI(null); showToast('Signed out'); return; }
+  await loadGIS();
+  google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID, scope: SCOPES,
+    callback: async (r) => {
+      if (r.error) { showToast('Sign-in failed: ' + r.error); return; }
+      token = r.access_token;
+      const u = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {headers:{Authorization:'Bearer '+token}}).then(x=>x.json());
+      updateAuthUI(u);
+      showToast('Signed in as ' + (u.name || u.email));
+      document.getElementById('uploadHint').textContent = folderIdSaved ? 'Receipts → ' + folderNameSaved : 'Connected — pick your receipts folder in Settings';
+    }
+  }).requestAccessToken();
+}
+
+function updateAuthUI(u) {
+  const btn = document.getElementById('authBtn'), name = document.getElementById('authName'), av = document.getElementById('authAvatar');
+  const dot = document.getElementById('driveDot'), st = document.getElementById('driveStatusText');
+  if (u) {
+    btn.textContent = 'Sign out'; btn.className = 'auth-btn';
+    name.textContent = u.name || u.email;
+    av.innerHTML = u.picture ? `<img src="${u.picture}"/>` : (u.name||'U').charAt(0);
+    dot.className = 'drive-dot on';
+    st.textContent = folderNameSaved ? 'Filing to: ' + folderNameSaved : 'Connected — pick folder in Settings';
+  } else {
+    btn.textContent = 'Sign in'; btn.className = 'auth-btn signin';
+    name.textContent = 'Not signed in'; av.innerHTML = '?';
+    dot.className = 'drive-dot'; st.textContent = 'Google Drive not connected';
+  }
+}
+
+// ── FOLDER PICKER ─────────────────────────────────────────
+async function pickFolder() {
+  if (!token) { showToast('Sign in first'); return; }
+  const list = document.getElementById('folderList');
+  list.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px 0;">Loading folders...</div>';
+  try {
+    const r = await fetch(
+      "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)&orderBy=name&pageSize=100",
+      {headers:{Authorization:'Bearer '+token}}
+    ).then(x=>x.json());
+    const folders = r.files || [];
+    list.innerHTML = folders.length ? folders.map(f=>`
+      <div class="folder-item" onclick="setFolder('${f.id}','${f.name.replace(/'/g,"\\'")}')">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" opacity="0.5"><path d="M1 4a1 1 0 011-1h4l2 2h6a1 1 0 011 1v7a1 1 0 01-1 1H2a1 1 0 01-1-1V4z"/></svg>
+        ${f.name}
+      </div>`).join('') : '<div style="font-size:12px;color:var(--text3);padding:8px 0;">No folders found</div>';
+  } catch { list.innerHTML = '<div style="font-size:12px;color:var(--danger);">Error loading folders</div>'; }
+}
+
+function setFolder(id, name) {
+  folderIdSaved = id; folderNameSaved = name;
+  localStorage.setItem('str_fid', id); localStorage.setItem('str_fname', name);
+  document.getElementById('folderDisplay').value = name;
+  document.getElementById('folderList').innerHTML = '';
+  document.getElementById('driveStatusText').textContent = 'Filing to: ' + name;
+  document.getElementById('uploadHint').textContent = 'Receipts → ' + name;
+  showToast('Folder set: ' + name);
+}
+
+// ── VISION OCR ────────────────────────────────────────────
+async function visionOCR(b64) {
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  const d = await r.json();
+  return d.responses?.[0]?.fullTextAnnotation?.text || '';
+}
+
+function parseOCR(text) {
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const vendor = lines[0] || 'Unknown';
+  let orderDate = null;
+  // Prefer "ordered" date over delivery date
+  const ordM = text.match(/order(?:ed)?[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (ordM) { const d = new Date(ordM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+  if (!orderDate) {
+    for (const p of [/(\d{4}-\d{2}-\d{2})/,/(\d{1,2}\/\d{1,2}\/\d{4})/]) {
+      const m = text.match(p); if (m) { const d=new Date(m[1]); if(!isNaN(d)){orderDate=d.toISOString().split('T')[0];break;} }
+    }
+  }
+  // Line items
+  const itemLines = [];
+  for (const line of lines) {
+    const m = line.match(/^(.+?)\s+\$?([\d,]+\.\d{2})$/);
+    if (!m) continue;
+    const name = m[1].trim(), price = parseFloat(m[2].replace(/,/g,''));
+    const lo = name.toLowerCase();
+    if (['subtotal','total','tax','shipping','discount','delivery','charge'].some(k=>lo.includes(k))) continue;
+    if (price > 0 && price < 50000) itemLines.push({name, price});
+  }
+  const subM = text.match(/subtotal[:\s]+\$?([\d,]+\.\d{2})/i);
+  const taxM = text.match(/(?:sales\s+)?tax[:\s]+\$?([\d,]+\.\d{2})/i);
+  const totM = text.match(/(?:order\s+)?total[:\s]+\$?([\d,]+\.\d{2})/i);
+  return {
+    vendor, orderDate,
+    items: itemLines,
+    subtotal: subM ? parseFloat(subM[1].replace(/,/g,'')) : null,
+    tax: taxM ? parseFloat(taxM[1].replace(/,/g,'')) : null,
+    total: totM ? parseFloat(totM[1].replace(/,/g,'')) : null
+  };
+}
+
+// ── FILE UPLOAD ───────────────────────────────────────────
+async function handleFileUpload(e) {
+  const file = e.target.files[0]; if (!file) return;
+  pendingFile = file;
+  const status = document.getElementById('aiStatus');
+  status.className = 'ai-status on';
+  document.getElementById('aiStatusText').textContent = token ? 'Scanning with Google Vision...' : 'Loading file...';
+
+  const reader = new FileReader();
+  reader.onload = async ev => {
+    const b64 = ev.target.result.split(',')[1];
+    let parsed = null;
+    if (token) {
+      try { const txt = await visionOCR(b64); parsed = parseOCR(txt); } catch { showToast('Vision scan failed — enter manually'); }
+    }
+    status.className = 'ai-status';
+    if (parsed?.vendor) {
+      document.getElementById('expVendor').value = parsed.vendor;
+      if (parsed.orderDate) document.getElementById('expDate').value = parsed.orderDate;
+      document.getElementById('bannerVendor').textContent = parsed.vendor;
+      document.getElementById('bannerDate').textContent = parsed.orderDate ? 'Order date: ' + parsed.orderDate : 'Date not detected — verify above';
+      document.getElementById('receiptBanner').style.display = 'block';
+      items = parsed.items?.length ? parsed.items.map(i=>({...i,ded:true})) : (parsed.subtotal ? [{name:parsed.vendor,price:parsed.subtotal,ded:true}] : []);
+      if (parsed.subtotal && parsed.tax) setTaxInfo(parsed.subtotal, parsed.tax);
+      else { taxRate = 0; document.getElementById('taxRow').style.display = 'none'; }
+      renderItems(); autoSuggestCat(parsed.vendor);
+      if (parsed.orderDate) buildFileName(parsed.orderDate, parsed.vendor, file.name);
+      showToast('Receipt scanned — review items below');
+    } else {
+      document.getElementById('bannerVendor').textContent = file.name;
+      document.getElementById('bannerDate').textContent = 'Enter details manually';
+      document.getElementById('receiptBanner').style.display = 'block';
+      showToast('File loaded — enter details manually');
+    }
+    updatePreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+function buildFileName(dateStr, vendor, origName) {
+  if (!dateStr || !vendor) return;
+  const [y,m,d] = dateStr.split('-');
+  const ext = origName.includes('.') ? '.'+origName.split('.').pop() : '';
+  const v = vendor.replace(/[^a-zA-Z0-9\s]/g,'').trim().replace(/\s+/g,'_');
+  pendingFileName = `${parseInt(m)}.${parseInt(d)}.${y.slice(2)}_${v}${ext}`;
+}
+
+// ── DRIVE UPLOAD ──────────────────────────────────────────
+async function uploadToDrive(file, filename) {
+  if (!token || !folderIdSaved || !file) return null;
+  const filing = document.getElementById('driveFiling');
+  filing.className = 'drive-filing on';
+  document.getElementById('driveFilingText').textContent = `Filing "${filename}" to Drive...`;
+  try {
+    const meta = {name: filename, parents: [folderIdSaved]};
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(meta)],{type:'application/json'}));
+    form.append('file', file);
+    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method:'POST', headers:{Authorization:'Bearer '+token}, body:form
+    });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    document.getElementById('driveFilingText').textContent = `Filed as "${filename}" in Drive`;
+    setTimeout(() => { filing.className = 'drive-filing'; }, 4000);
+    return data.id;
+  } catch(err) {
+    filing.className = 'drive-filing err';
+    document.getElementById('driveFilingText').textContent = `Drive filing failed — manually save as: ${filename}`;
+    return null;
+  }
+}
+
+// ── TAX ───────────────────────────────────────────────────
+function setTaxInfo(sub, tax) {
+  taxRate = tax / sub;
+  document.getElementById('taxRow').style.display = '';
+  document.getElementById('recSub').value = sub.toFixed(2);
+  document.getElementById('recTax').value = tax.toFixed(2);
+  document.getElementById('taxRate').value = (taxRate*100).toFixed(2)+'%';
+}
+
+function recalcTax() {
+  const sub = parseFloat(document.getElementById('recSub').value)||0;
+  const tax = parseFloat(document.getElementById('recTax').value)||0;
+  taxRate = sub>0&&tax>0 ? tax/sub : 0;
+  document.getElementById('taxRate').value = taxRate>0 ? (taxRate*100).toFixed(2)+'%' : '—';
+  recalcTotal();
+}
+
+function recalcTotal() {
+  const dedSub = items.filter(i=>i.ded).reduce((s,i)=>s+i.price,0);
+  const tot = taxRate>0 ? Math.round(dedSub*(1+taxRate)*100)/100 : dedSub;
+  document.getElementById('expTotal').value = tot.toFixed(2);
+  updatePreview();
+}
+
+// ── ITEMS ─────────────────────────────────────────────────
+function renderItems() {
+  const c = document.getElementById('lineItems');
+  if (!items.length) { c.innerHTML = '<div class="empty-state" style="padding:14px;">No items yet</div>'; document.getElementById('expTotal').value=''; return; }
+  c.innerHTML = items.map((it,i)=>`
+    <div class="line-item ${it.ded?'on':'off'}">
+      <span style="font-size:13px;">${it.name}</span>
+      <span style="font-size:13px;font-weight:500;min-width:60px;text-align:right;">$${it.price.toFixed(2)}</span>
+      <button class="toggle-btn ${it.ded?'on':''}" onclick="toggleItem(${i})">${it.ded?'✓':'×'}</button>
+    </div>`).join('');
+  recalcTotal();
+}
+
+function toggleItem(i) { items[i].ded = !items[i].ded; renderItems(); }
+
+function addItem() {
+  const n = document.getElementById('newName').value.trim(), a = parseFloat(document.getElementById('newAmt').value);
+  if (!n || isNaN(a)) { showToast('Enter name and amount'); return; }
+  items.push({name:n, price:a, ded:true});
+  document.getElementById('newName').value=''; document.getElementById('newAmt').value='';
+  renderItems();
+}
+
+function handleOverride() {
+  const v = parseFloat(document.getElementById('expOverride').value);
+  if (!isNaN(v)) { document.getElementById('expTotal').value=v.toFixed(2); updatePreview(); }
+}
+
+// ── PROPERTY & CATEGORY ───────────────────────────────────
+function selProp(p) {
+  selProp = p;
+  ['pearl','jays','both'].forEach(x => {
+    document.getElementById('btn'+x.charAt(0).toUpperCase()+x.slice(1)).className = 'prop-btn'+(x===p?' sel-'+x:'');
+  });
+  document.getElementById('pearlCatWrap').style.display = (p==='pearl'||p==='both') ? '' : 'none';
+  document.getElementById('jaysCatWrap').style.display = (p==='jays'||p==='both') ? '' : 'none';
+  autoSuggestCat(document.getElementById('expVendor').value);
+  updatePreview();
+}
+
+function autoSuggestCat(vendor) {
+  if (!vendor || !selProp) return;
+  const cats = VCATS[vendor.toLowerCase().trim()]; if (!cats) return;
+  if ((selProp==='pearl'||selProp==='both') && cats.pearl) document.getElementById('pearlCat').value = cats.pearl;
+  if ((selProp==='jays'||selProp==='both') && cats.jays) document.getElementById('jaysCat').value = cats.jays;
+  updateCatPreview();
+}
+
+function updateCatPreview() {
+  const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
+  const el = document.getElementById('catPreview'), txt = document.getElementById('catPreviewText');
+  let msg = '';
+  if (selProp==='both'&&pc&&jc) msg=`Pearl → "${pc}" (Sch C) · Jay's → "${jc}" (Sch E)`;
+  else if (selProp==='pearl'&&pc) msg=`Pearl in the Pines → "${pc}" — Schedule C`;
+  else if (selProp==='jays'&&jc) msg=`Jay's Retreat → "${jc}" — Schedule E`;
+  if (msg) { txt.innerHTML=msg; el.style.display='block'; } else el.style.display='none';
+  updatePreview();
+}
+
+// ── PREVIEW & CONFIRM ─────────────────────────────────────
+function fmtD(d) { const[y,m,dy]=d.split('-'); return`${parseInt(m)}/${parseInt(dy)}/${y.slice(2)}`; }
+
+function buildRows(date, vendor, total, prop, pc, jc) {
+  if (prop==='pearl') return [{date:fmtD(date),vendor,prop:'Pearl',account:`Pearl: ${pc}`,amount:total}];
+  if (prop==='jays') return [{date:fmtD(date),vendor,prop:"Jay's",account:`Jay's: ${jc}`,amount:total}];
+  const h=Math.round(total/2*100)/100, o=Math.round((total-h)*100)/100;
+  return [
+    {date:fmtD(date),vendor,prop:'Pearl',account:`Pearl: ${pc}`,amount:h},
+    {date:fmtD(date),vendor,prop:"Jay's",account:`Jay's: ${jc}`,amount:o}
+  ];
+}
+
+function updatePreview() {
+  const el = document.getElementById('entryPreview');
+  const date = document.getElementById('expDate').value;
+  const vendor = document.getElementById('expVendor').value.trim();
+  const total = parseFloat(document.getElementById('expTotal').value) || parseFloat(document.getElementById('expOverride').value) || 0;
+  const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
+  if (!date||!vendor||!selProp||total===0) { el.innerHTML='<div class="empty-state">Fill in all fields to preview</div>'; return; }
+  const rows = buildRows(date,vendor,total,selProp,pc,jc);
+  el.innerHTML = rows.map(r=>`
+    <div class="sum-row">
+      <span>${r.date} &nbsp;<span class="pill ${r.prop==='Pearl'?'pill-pearl':'pill-jays'}">${r.prop}</span></span>
+      <span style="color:var(--text2);flex:1;margin:0 12px;">${r.account}</span>
+      <span class="sum-val">$${r.amount.toFixed(2)}</span>
+    </div>`).join('');
+  if (date&&vendor&&pendingFile) buildFileName(date, vendor, pendingFile.name);
+}
+
+async function confirmEntry() {
+  const date = document.getElementById('expDate').value;
+  const vendor = document.getElementById('expVendor').value.trim();
+  const total = parseFloat(document.getElementById('expTotal').value) || parseFloat(document.getElementById('expOverride').value) || 0;
+  const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
+  if (!date||!vendor||!selProp||total===0) { showToast('Fill in date, vendor, property, and amount'); return; }
+  if ((selProp==='pearl'||selProp==='both')&&!pc) { showToast('Select a Pearl category'); return; }
+  if ((selProp==='jays'||selProp==='both')&&!jc) { showToast("Select a Jay's category"); return; }
+
+  if (pendingFile) buildFileName(date, vendor, pendingFile.name);
+  const rows = buildRows(date,vendor,total,selProp,pc,jc);
+  rows.forEach(r => entries.push({...r, id:Date.now()+Math.random(), receiptName:pendingFileName||null}));
+  saveEntries();
+
+  if (pendingFile && pendingFileName) {
+    if (token && folderIdSaved) {
+      await uploadToDrive(pendingFile, pendingFileName);
+    } else {
+      showToast(`Save receipt manually as: ${pendingFileName}`);
+    }
+  }
+
+  if (!pendingFile) showToast(`Saved ${rows.length} ${rows.length===1?'entry':'entries'} — ${vendor}`);
+  clearForm();
+}
+
+function clearForm() {
+  ['expDate','expVendor','expTotal','expOverride','pearlCat','jaysCat','recSub','recTax','taxRate','newName','newAmt'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  document.getElementById('receiptBanner').style.display='none';
+  document.getElementById('aiStatus').className='ai-status';
+  document.getElementById('taxRow').style.display='none';
+  document.getElementById('catPreview').style.display='none';
+  document.getElementById('driveFiling').className='drive-filing';
+  taxRate=0; items=[]; selProp=null; pendingFile=null; pendingFileName=null;
+  ['pearl','jays','both'].forEach(p=>{document.getElementById('btn'+p.charAt(0).toUpperCase()+p.slice(1)).className='prop-btn';});
+  document.getElementById('pearlCatWrap').style.display='none';
+  document.getElementById('jaysCatWrap').style.display='none';
+  document.getElementById('fileInput').value='';
+  renderItems(); updatePreview();
+  document.getElementById('expDate').valueAsDate = new Date();
+}
+
+// ── NAV ───────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('nav-'+name).classList.add('active');
+  if (name==='history') renderHistory();
+  if (name==='summary') renderSummary();
+  if (name==='recurring') renderRecurring();
+  if (name==='export') renderExportStats();
+  if (name==='settings' && folderNameSaved) document.getElementById('folderDisplay').value = folderNameSaved;
+}
+
+// ── RECURRING ─────────────────────────────────────────────
+function renderRecurring() {
+  const c=document.getElementById('recList');
+  if (!recs.length) { c.innerHTML='<div class="empty-state">No recurring expenses</div>'; return; }
+  c.innerHTML = recs.map((r,i)=>`
+    <div class="rec-item">
+      <div>
+        <div style="font-size:13px;font-weight:500;">${r.vendor}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">Due: ${r.day?r.day+'th':'varies'} · ${r.prop==='both'?'Both':r.prop==='pearl'?'Pearl':"Jay's"} · ${r.cat}</div>
+      </div>
+      <div style="font-family:'Fraunces',serif;font-size:17px;">$${parseFloat(r.amount).toFixed(2)}</div>
+      <button class="btn btn-sm" onclick="useRec(${i})">Use →</button>
+    </div>`).join('');
+}
+
+function useRec(i) {
+  const r = recs[i];
+  showPage('add');
+  document.getElementById('expDate').valueAsDate = new Date();
+  document.getElementById('expVendor').value = r.vendor;
+  document.getElementById('expOverride').value = r.amount;
+  document.getElementById('expTotal').value = parseFloat(r.amount).toFixed(2);
+  selProp(r.prop);
+  setTimeout(() => {
+    if (r.prop==='pearl'||r.prop==='both') document.getElementById('pearlCat').value = r.cat;
+    if (r.prop==='jays'||r.prop==='both') {
+      document.getElementById('jaysCat').value = r.vendor.toLowerCase()==='pricelabs' ? 'Legal and professional services' : r.cat;
+    }
+    updateCatPreview(); updatePreview();
+  }, 50);
+  showToast('Loaded: ' + r.vendor);
+}
+
+function addRecurring() {
+  const v=document.getElementById('rVendor').value.trim(), a=document.getElementById('rAmt').value;
+  const d=document.getElementById('rDay').value, p=document.getElementById('rProp').value, c=document.getElementById('rCat').value.trim();
+  if (!v||!a) { showToast('Enter vendor and amount'); return; }
+  recs.push({vendor:v,amount:parseFloat(a),day:parseInt(d)||null,prop:p,cat:c});
+  localStorage.setItem('str_recs',JSON.stringify(recs));
+  ['rVendor','rAmt','rDay','rCat'].forEach(id=>document.getElementById(id).value='');
+  renderRecurring(); showToast('Recurring saved');
+}
+
+// ── HISTORY ───────────────────────────────────────────────
+function renderHistory() {
+  const search=document.getElementById('hSearch').value.toLowerCase(), filter=document.getElementById('hFilter').value;
+  const tbody=document.getElementById('hBody');
+  let f=entries.filter(e=>(!search||e.vendor?.toLowerCase().includes(search)||e.account?.toLowerCase().includes(search))&&(!filter||e.account?.includes(filter)));
+  if (!f.length) { tbody.innerHTML='<tr><td colspan="7"><div class="empty-state">No entries found</div></td></tr>'; return; }
+  f.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  tbody.innerHTML=f.map(e=>`
+    <tr>
+      <td>${e.date}</td><td>${e.vendor}</td>
+      <td><span class="pill ${e.prop==='Pearl'?'pill-pearl':'pill-jays'}">${e.prop}</span></td>
+      <td><span class="cat-tag">${(e.account||'').split(': ')[1]||''}</span></td>
+      <td style="text-align:right;font-weight:500;">$${e.amount.toFixed(2)}</td>
+      <td style="font-size:11px;color:var(--text3);">${e.receiptName||'—'}</td>
+      <td><button class="btn btn-sm" onclick="delEntry('${e.id}')" style="color:var(--danger);border-color:transparent;padding:4px 8px;">✕</button></td>
+    </tr>`).join('');
+}
+
+function delEntry(id) { entries=entries.filter(e=>String(e.id)!==String(id)); saveEntries(); renderHistory(); showToast('Entry removed'); }
+
+// ── SUMMARY ───────────────────────────────────────────────
+function renderSummary() {
+  const total=entries.reduce((s,e)=>s+e.amount,0);
+  const pearl=entries.filter(e=>e.prop==='Pearl').reduce((s,e)=>s+e.amount,0);
+  const jays=entries.filter(e=>e.prop!=='Pearl').reduce((s,e)=>s+e.amount,0);
+  const fmt=n=>'$'+n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  document.getElementById('sTotal').textContent=fmt(total);
+  document.getElementById('sPearl').textContent=fmt(pearl);
+  document.getElementById('sJays').textContent=fmt(jays);
+  document.getElementById('sCount').textContent=entries.length;
+  const bd=(prop)=>{
+    const pe=entries.filter(e=>e.prop===prop);
+    if (!pe.length) return '<div class="empty-state" style="padding:16px;">No entries yet</div>';
+    const cats={};
+    pe.forEach(e=>{const c=(e.account||'').split(': ')[1]||'Other'; cats[c]=(cats[c]||0)+e.amount;});
+    const sorted=Object.entries(cats).sort((a,b)=>b[1]-a[1]);
+    const tot=sorted.reduce((s,[,v])=>s+v,0);
+    return sorted.map(([c,a])=>`<div class="sum-row"><span>${c}</span><span class="sum-val">$${a.toFixed(2)}</span></div>`).join('')
+      +`<div class="sum-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px;font-weight:500;"><span>Total</span><span class="sum-val">$${tot.toFixed(2)}</span></div>`;
+  };
+  document.getElementById('pearlBd').innerHTML=bd('Pearl');
+  document.getElementById('jaysBd').innerHTML=bd("Jay's");
+}
+
+// ── EXPORT ────────────────────────────────────────────────
+function buildCSV() {
+  const rows=[['Date','Description','Account','Expense']];
+  [...entries].sort((a,b)=>(a.date||'').localeCompare(b.date||'')).forEach(e=>rows.push([e.date,e.vendor,e.account,e.amount.toFixed(2)]));
+  return rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+}
+function exportCSV() { if (!entries.length) { showToast('No entries'); return; } const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([buildCSV()],{type:'text/csv'})); a.download='STR_Expenses_2026.csv'; a.click(); showToast('CSV downloaded'); }
+function copyCSV() { if (!entries.length) { showToast('No entries'); return; } navigator.clipboard.writeText(buildCSV()).then(()=>showToast('CSV copied')); }
+function renderExportStats() { document.getElementById('exportStats').textContent=`${entries.length} entries · $${entries.reduce((s,e)=>s+e.amount,0).toFixed(2)} total`; }
+
+// ── UTILS ─────────────────────────────────────────────────
+function saveEntries() { localStorage.setItem('str_entries_26',JSON.stringify(entries)); }
+function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast on'; setTimeout(()=>t.className='toast',3000); }
+
+// ── INIT ──────────────────────────────────────────────────
+document.getElementById('expDate').valueAsDate = new Date();
+document.getElementById('expVendor').addEventListener('input', function() { autoSuggestCat(this.value); updatePreview(); });
+document.getElementById('expDate').addEventListener('input', updatePreview);
+if (folderNameSaved) document.getElementById('driveStatusText').textContent = 'Folder saved: ' + folderNameSaved + ' (sign in to connect)';
+renderItems();
+</script>
+</body>
+</html>
