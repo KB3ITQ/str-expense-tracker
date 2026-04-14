@@ -573,10 +573,7 @@ function parseOCR(text) {
   }
   // Join and clean — remove trailing LLC/company suffixes that aren't the store
   let vendor = vendorLines.join(' ').trim() || 'Unknown';
-  // Fix word-order issues from multi-line OCR (e.g. "THE
-DEPOT
-HOME" -> "THE HOME DEPOT")
-  // If vendor contains "DEPOT" and "HOME" out of order, fix it
+  // Fix word-order: Home Depot OCR splits across lines, rejoin correctly
   if (/depot/i.test(vendor) && /home/i.test(vendor)) {
     vendor = 'THE HOME DEPOT';
   }
