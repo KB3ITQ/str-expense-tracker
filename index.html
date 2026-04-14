@@ -245,9 +245,9 @@
       <div class="card-title">Step 3 — Property & Category</div>
       <label style="margin-bottom:7px;">Property</label>
       <div class="prop-sel">
-        <button class="prop-btn" id="btnPearl" onclick="selProp('pearl')">Pearl in the Pines</button>
-        <button class="prop-btn" id="btnJays" onclick="selProp('jays')">Jay's Retreat</button>
-        <button class="prop-btn" id="btnBoth" onclick="selProp('both')">Both (50/50)</button>
+        <button class="prop-btn" id="btnPearl" onclick="setProp('pearl')">Pearl in the Pines</button>
+        <button class="prop-btn" id="btnJays" onclick="setProp('jays')">Jay's Retreat</button>
+        <button class="prop-btn" id="btnBoth" onclick="setProp('both')">Both (50/50)</button>
       </div>
       <div class="row2">
         <div id="pearlCatWrap" style="display:none;">
@@ -391,7 +391,7 @@ const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleuser
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/cloud-platform';
 
 let entries = JSON.parse(localStorage.getItem('str_entries_26') || '[]');
-let items = [], selProp = null, taxRate = 0;
+let items = [], selectedProp = null, taxRate = 0;
 let pendingFile = null, pendingFileName = null;
 let token = null, folderIdSaved = localStorage.getItem('str_fid') || null, folderNameSaved = localStorage.getItem('str_fname') || null;
 
@@ -669,8 +669,8 @@ function handleOverride() {
 }
 
 // ── PROPERTY & CATEGORY ───────────────────────────────────
-function selProp(p) {
-  selProp = p;
+function setProp(p) {
+  selectedProp = p;
   ['pearl','jays','both'].forEach(x => {
     document.getElementById('btn'+x.charAt(0).toUpperCase()+x.slice(1)).className = 'prop-btn'+(x===p?' sel-'+x:'');
   });
@@ -681,10 +681,10 @@ function selProp(p) {
 }
 
 function autoSuggestCat(vendor) {
-  if (!vendor || !selProp) return;
+  if (!vendor || !selectedProp) return;
   const cats = VCATS[vendor.toLowerCase().trim()]; if (!cats) return;
-  if ((selProp==='pearl'||selProp==='both') && cats.pearl) document.getElementById('pearlCat').value = cats.pearl;
-  if ((selProp==='jays'||selProp==='both') && cats.jays) document.getElementById('jaysCat').value = cats.jays;
+  if ((selectedProp==='pearl'||selectedProp==='both') && cats.pearl) document.getElementById('pearlCat').value = cats.pearl;
+  if ((selectedProp==='jays'||selectedProp==='both') && cats.jays) document.getElementById('jaysCat').value = cats.jays;
   updateCatPreview();
 }
 
@@ -692,9 +692,9 @@ function updateCatPreview() {
   const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
   const el = document.getElementById('catPreview'), txt = document.getElementById('catPreviewText');
   let msg = '';
-  if (selProp==='both'&&pc&&jc) msg=`Pearl → "${pc}" (Sch C) · Jay's → "${jc}" (Sch E)`;
-  else if (selProp==='pearl'&&pc) msg=`Pearl in the Pines → "${pc}" — Schedule C`;
-  else if (selProp==='jays'&&jc) msg=`Jay's Retreat → "${jc}" — Schedule E`;
+  if (selectedProp==='both'&&pc&&jc) msg=`Pearl → "${pc}" (Sch C) · Jay's → "${jc}" (Sch E)`;
+  else if (selectedProp==='pearl'&&pc) msg=`Pearl in the Pines → "${pc}" — Schedule C`;
+  else if (selectedProp==='jays'&&jc) msg=`Jay's Retreat → "${jc}" — Schedule E`;
   if (msg) { txt.innerHTML=msg; el.style.display='block'; } else el.style.display='none';
   updatePreview();
 }
@@ -718,8 +718,8 @@ function updatePreview() {
   const vendor = document.getElementById('expVendor').value.trim();
   const total = parseFloat(document.getElementById('expTotal').value) || parseFloat(document.getElementById('expOverride').value) || 0;
   const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
-  if (!date||!vendor||!selProp||total===0) { el.innerHTML='<div class="empty-state">Fill in all fields to preview</div>'; return; }
-  const rows = buildRows(date,vendor,total,selProp,pc,jc);
+  if (!date||!vendor||!selectedProp||total===0) { el.innerHTML='<div class="empty-state">Fill in all fields to preview</div>'; return; }
+  const rows = buildRows(date,vendor,total,selectedProp,pc,jc);
   el.innerHTML = rows.map(r=>`
     <div class="sum-row">
       <span>${r.date} &nbsp;<span class="pill ${r.prop==='Pearl'?'pill-pearl':'pill-jays'}">${r.prop}</span></span>
@@ -734,12 +734,12 @@ async function confirmEntry() {
   const vendor = document.getElementById('expVendor').value.trim();
   const total = parseFloat(document.getElementById('expTotal').value) || parseFloat(document.getElementById('expOverride').value) || 0;
   const pc = document.getElementById('pearlCat').value, jc = document.getElementById('jaysCat').value;
-  if (!date||!vendor||!selProp||total===0) { showToast('Fill in date, vendor, property, and amount'); return; }
-  if ((selProp==='pearl'||selProp==='both')&&!pc) { showToast('Select a Pearl category'); return; }
-  if ((selProp==='jays'||selProp==='both')&&!jc) { showToast("Select a Jay's category"); return; }
+  if (!date||!vendor||!selectedProp||total===0) { showToast('Fill in date, vendor, property, and amount'); return; }
+  if ((selectedProp==='pearl'||selectedProp==='both')&&!pc) { showToast('Select a Pearl category'); return; }
+  if ((selectedProp==='jays'||selectedProp==='both')&&!jc) { showToast("Select a Jay's category"); return; }
 
   if (pendingFile) buildFileName(date, vendor, pendingFile.name);
-  const rows = buildRows(date,vendor,total,selProp,pc,jc);
+  const rows = buildRows(date,vendor,total,selectedProp,pc,jc);
   rows.forEach(r => entries.push({...r, id:Date.now()+Math.random(), receiptName:pendingFileName||null}));
   saveEntries();
 
@@ -764,7 +764,7 @@ function clearForm() {
   document.getElementById('taxRow').style.display='none';
   document.getElementById('catPreview').style.display='none';
   document.getElementById('driveFiling').className='drive-filing';
-  taxRate=0; items=[]; selProp=null; pendingFile=null; pendingFileName=null;
+  taxRate=0; items=[]; selectedProp=null; pendingFile=null; pendingFileName=null;
   ['pearl','jays','both'].forEach(p=>{document.getElementById('btn'+p.charAt(0).toUpperCase()+p.slice(1)).className='prop-btn';});
   document.getElementById('pearlCatWrap').style.display='none';
   document.getElementById('jaysCatWrap').style.display='none';
@@ -808,7 +808,7 @@ function useRec(i) {
   document.getElementById('expVendor').value = r.vendor;
   document.getElementById('expOverride').value = r.amount;
   document.getElementById('expTotal').value = parseFloat(r.amount).toFixed(2);
-  selProp(r.prop);
+  setProp(r.prop);
   setTimeout(() => {
     if (r.prop==='pearl'||r.prop==='both') document.getElementById('pearlCat').value = r.cat;
     if (r.prop==='jays'||r.prop==='both') {
