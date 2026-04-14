@@ -359,6 +359,16 @@
       <p style="font-size:11px;color:var(--text3);margin-top:6px;">Format: M.D.YY_Vendor.ext</p>
     </div>
     <div class="card">
+      <div class="card-title">Gemini API Key (for receipt scanning)</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px;">Used to intelligently extract items from receipts. A default key is built in. Enter your own if needed.</p>
+      <div style="display:flex;gap:8px;">
+        <input type="password" id="geminiKeyInput" placeholder="AIza... (leave blank to use default)" style="flex:1;font-family:monospace;"/>
+        <button class="btn btn-sm btn-primary" onclick="saveGeminiKey()">Save</button>
+        <button class="btn btn-sm" onclick="clearGeminiKey()">Reset to default</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px;" id="geminiKeyStatus"></div>
+    </div>
+    <div class="card">
       <div class="card-title">No-Receipt Vendors</div>
       <div style="font-size:12px;color:var(--text2);line-height:2.2;">
         <div>• T-Mobile — t-mobile.com account if audited</div>
@@ -546,21 +556,71 @@ function renderPDF(dataUrl, resolve, reject) {
 
 // ── VISION OCR ────────────────────────────────────────────
 
-// ── SMART RECEIPT PARSER ────────────────────────────────
-async function extractWithGemini(ocrText) {
-  // Smart local parser - no external AI needed
-  // Handles Walmart, Home Depot, Amazon, and most receipt formats
+// ── RECEIPT PARSER (Gemini AI + regex fallback) ──────────
+const DEFAULT_GEMINI_KEY = 'AIzaSyB6Mdczu_hyWl-m5MUj5_d1Yg3GZYGpH_8';
 
+function getGeminiKey() {
+  return localStorage.getItem('str_gemini_key') || DEFAULT_GEMINI_KEY;
+}
+
+async function extractWithGemini(ocrText) {
+  // Try Gemini AI first
+  try {
+    const key = getGeminiKey();
+    const prompt = `You are a receipt parser. Extract data from this receipt OCR text and return ONLY valid JSON with no markdown.
+
+Return exactly this structure:
+{"vendor":"store name","order_date":"YYYY-MM-DD or null","items":[{"name":"item description","price":0.00}],"subtotal":0.00,"tax":0.00,"total":0.00}
+
+Rules:
+- vendor: merchant name only (e.g. "Walmart", "Home Depot"), not customer name
+- order_date: the ORDER or PURCHASE date (not delivery). Format YYYY-MM-DD. null if not found.
+- items: purchased line items with pre-tax prices. Do NOT include subtotal, tax, savings, tips, delivery fees as items.
+- subtotal: pre-tax merchandise total after any discounts/savings
+- tax: sales tax amount only
+- total: final charged amount
+- Use null for unknown fields
+
+Receipt text:
+` + ocrText;
+
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + key,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.json();
+      console.warn('Gemini failed:', response.status, err?.error?.message, '— falling back to regex parser');
+      return regexParser(ocrText);
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const clean = rawText.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+    console.log('Gemini success — vendor:', parsed.vendor, 'date:', parsed.order_date,
+      'items:', parsed.items?.length, 'subtotal:', parsed.subtotal, 'tax:', parsed.tax);
+    return parsed;
+
+  } catch(err) {
+    console.warn('Gemini error:', err.message, '— falling back to regex parser');
+    return regexParser(ocrText);
+  }
+}
+
+function regexParser(ocrText) {
   const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
 
-  // ── VENDOR ──
-  // First meaningful line before order numbers
+  // Vendor
   let vendor = 'Unknown';
-  for (const line of lines) {
-    if (/^(order|invoice|#|\d{5,}|subtotal|tax|total)/i.test(line)) break;
-    if (line.length > 2 && !/^\d+$/.test(line)) { vendor = line; break; }
-  }
-  // Common vendor cleanups
   if (/walmart/i.test(ocrText)) vendor = 'Walmart';
   else if (/home depot/i.test(ocrText) || (/depot/i.test(ocrText) && /home/i.test(ocrText))) vendor = 'The Home Depot';
   else if (/amazon/i.test(ocrText)) vendor = 'Amazon';
@@ -569,128 +629,107 @@ async function extractWithGemini(ocrText) {
   else if (/harbor freight/i.test(ocrText)) vendor = 'Harbor Freight';
   else if (/ace hardware/i.test(ocrText)) vendor = 'Ace Hardware';
   else if (/wayfair/i.test(ocrText)) vendor = 'Wayfair';
+  else {
+    for (const line of lines) {
+      if (/^(order|invoice|#|\d{5,})/i.test(line)) break;
+      if (line.length > 2 && !/^\d+$/.test(line)) { vendor = line; break; }
+    }
+  }
 
-  // ── DATE ──
-  let orderDate = null;
-  // "Apr 07, 2026" format (Walmart)
-  const monthNames = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-  const textDateM = ocrText.match(/(?:ordered?\s+)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s+(\d{4})/i);
+  // Date
+  let order_date = null;
+  const monthMap = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
+                    jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+  const textDateM = ocrText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s+(\d{4})/i);
   if (textDateM) {
-    const mon = monthNames[textDateM[1].toLowerCase().substring(0,3)];
-    orderDate = `${textDateM[3]}-${String(mon).padStart(2,'0')}-${String(textDateM[2]).padStart(2,'0')}`;
+    const mon = monthMap[textDateM[1].toLowerCase().substring(0,3)];
+    order_date = `${textDateM[3]}-${mon}-${textDateM[2].padStart(2,'0')}`;
   }
-  // M/D/YYYY format (Home Depot) - prefer "Ordered" date
-  if (!orderDate) {
+  if (!order_date) {
     const orderedM = ocrText.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-    if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+    if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) order_date = d.toISOString().split('T')[0]; }
   }
-  if (!orderDate) {
+  if (!order_date) {
     for (const m of [...ocrText.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)]) {
       const before = ocrText.substring(Math.max(0, m.index-40), m.index).toLowerCase();
       if (before.includes('deliver')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+      const d = new Date(m[1]); if (!isNaN(d)) { order_date = d.toISOString().split('T')[0]; break; }
     }
   }
 
-  // ── SUBTOTAL / TAX / TOTAL ──
-  let subtotal = null, tax = null, total = null;
-  // Look for labeled rows - handles both "Subtotal $124.67" and "Subtotal\n$124.67"
-  const findAmount = (pattern) => {
-    const m = ocrText.match(pattern);
+  // Subtotal / tax / total
+  const amountRe = (label) => {
+    const m = ocrText.match(new RegExp(label + '[\\s\\n:$]*([0-9,]+\\.\\d{2})', 'i'));
     return m ? parseFloat(m[1].replace(/,/g,'')) : null;
   };
-  subtotal = findAmount(/subtotal\s*[\n:$\s]+([0-9,]+\.\d{2})/i);
-  tax      = findAmount(/(?:^|\n)tax\s*[\n:$\s]+([0-9,]+\.\d{2})/im);
-  total    = findAmount(/(?:^|\n)total\s*[\n:$\s]+([0-9,]+\.\d{2})/im);
-
-  // Walmart has "Savings -$X" which reduces subtotal - use post-savings subtotal
-  // Look for the final pre-tax amount (after savings line)
-  const savingsM = ocrText.match(/savings\s*[-\$\s]+([0-9,]+\.\d{2})/i);
-  if (savingsM && subtotal) {
-    const afterSavings = findAmount(/\$([0-9,]+\.\d{2})\s*\n(?:free delivery|delivery|tax|total)/i);
-    if (afterSavings) subtotal = afterSavings;
-  }
-
-  // Infer missing values
+  let subtotal = amountRe('subtotal');
+  let tax = amountRe('tax');
+  let total = amountRe('total');
   if (!tax && subtotal && total) tax = Math.round((total - subtotal) * 100) / 100;
   if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
+  const summaryAmounts = new Set([subtotal, tax, total].filter(Boolean).map(v => v.toFixed(2)));
 
-  // ── LINE ITEMS ──
-  // Strategy: find lines that have both a description and a price on the same line
-  // OR find description lines followed by price lines
+  // Items
   const items = [];
-  const SKIP = /^(walmart|home depot|amazon|order|invoice|ship|subtotal|savings|tax|total|free delivery|driver|tip|temporary|payment|your|this covers|if needed|weight-adjusted|shopped qty|substitution|qty \d|#\d|apr |jan |feb |mar |may |jun |jul |aug |sep |oct |nov |dec |\d{4,})/i;
-  const PRICE_RE = /\$([0-9,]+\.\d{2})/;
-  const summaryAmounts = new Set([subtotal, tax, total].filter(Boolean).map(v => v?.toFixed(2)));
+  const SKIP = /^(walmart|the home depot|amazon|sam.s club|target|order|invoice|ship|subtotal|savings|tax|total|free delivery|driver|tip|temporary|payment|your payment|this covers|if needed|#\d|^\d{4,}$|jan |feb |mar |apr |may |jun |jul |aug |sep |oct |nov |dec )/i;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (SKIP.test(line)) continue;
-
-    // Case 1: price is on the same line as description
-    // e.g. "Great Value Yogurt, 32oz   $3.36"
-    const inlineM = line.match(/^(.{5,}?)\s+\$([0-9,]+\.\d{2})(?:\s|$)/);
-    if (inlineM) {
-      const name = inlineM[1].trim();
-      const price = parseFloat(inlineM[2].replace(/,/g,''));
-      if (!SKIP.test(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000) {
-        items.push({ name, price });
-        continue;
-      }
-    }
-
-    // Case 2: Walmart format - "Item Name, Each   Shopped Qty 1   $3.36"
-    // The price appears after qty info on the same line
-    const walmartM = line.match(/^(.+?)\s+(?:shopped|weight-adjusted|substitution)s?\s+qty\s+\d+\s+\$([0-9,]+\.\d{2})/i);
-    if (walmartM) {
-      const name = walmartM[1].trim();
-      const price = parseFloat(walmartM[2].replace(/,/g,''));
-      if (!summaryAmounts.has(price.toFixed(2)) && price > 0) {
-        items.push({ name, price });
-        continue;
-      }
-    }
-
-    // Case 3: description line followed by price on next line
-    if (line.length > 10 && !SKIP.test(line) && !PRICE_RE.test(line)) {
-      const nextLine = lines[i+1] || '';
-      const nextM = nextLine.match(/^\$?([0-9,]+\.\d{2})$/);
-      if (nextM) {
-        const price = parseFloat(nextM[1].replace(/,/g,''));
-        if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000) {
-          items.push({ name: line, price });
-          i++; // skip the price line
-          continue;
-        }
-      }
-    }
+  // Walmart: "Item Name   Shopped Qty 1   $3.36"
+  const walmartRe = /^(.+?)\s+(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+\d+\s+\$([\d,]+\.\d{2})/gim;
+  let wm;
+  while ((wm = walmartRe.exec(ocrText)) !== null) {
+    const name = wm[1].trim(), price = parseFloat(wm[2].replace(/,/g,''));
+    if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && !SKIP.test(name)) items.push({name, price});
   }
 
-  // Home Depot "Pre Tax Amount" column: unit_price, 0, 0, pretax_total
+  // Home Depot Pre Tax Amount column
   if (items.length === 0 && ocrText.includes('Pre Tax Amount')) {
     const ptIdx = ocrText.indexOf('Pre Tax Amount');
-    const section = ocrText.substring(ptIdx, ptIdx + 500);
-    const amounts = [...section.matchAll(/\$([0-9,]+\.\d{2})/g)]
+    const section = ocrText.substring(ptIdx, ptIdx+600);
+    const footerIdx = section.search(/SKU|Printed On|Page \d/i);
+    const itemSection = footerIdx > -1 ? section.substring(0, footerIdx) : section;
+    const amounts = [...itemSection.matchAll(/\$([\d,]+\.\d{2})/g)]
       .map(m => parseFloat(m[1].replace(/,/g,''))).filter(a => a > 0);
     if (amounts.length > 0) {
       const preTax = amounts[amounts.length - 1];
-      if (!summaryAmounts.has(preTax.toFixed(2))) {
-        subtotal = subtotal || preTax;
-        items.push({ name: vendor, price: preTax });
+      subtotal = subtotal || preTax;
+      const descLines = itemSection.split('\n').map(l=>l.trim()).filter(Boolean);
+      let desc = vendor;
+      for (const l of descLines.slice(1)) {
+        if (/^[\$\d]/.test(l) || /^(qty|sku|printed|page|hardware$|pre tax|unit|discount|net)/i.test(l)) continue;
+        if (l.length > 10) { desc = l; break; }
+      }
+      if (!summaryAmounts.has(preTax.toFixed(2))) items.push({name: desc, price: preTax});
+    }
+  }
+
+  // Generic inline price fallback
+  if (items.length === 0) {
+    for (const line of lines) {
+      if (SKIP.test(line)) continue;
+      const m = line.match(/^(.{5,}?)\s+\$?([\d,]+\.\d{2})(?:\s|$)/);
+      if (m) {
+        const name = m[1].trim(), price = parseFloat(m[2].replace(/,/g,''));
+        if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000 && !SKIP.test(name))
+          items.push({name, price});
       }
     }
   }
 
-  // If still no items, fall back to subtotal
-  if (items.length === 0 && subtotal) {
-    items.push({ name: vendor, price: subtotal });
-  }
+  if (items.length === 0 && subtotal) items.push({name: vendor, price: subtotal});
 
-  console.log('Smart parser — vendor:', vendor, 'date:', orderDate,
+  console.log('Regex parser — vendor:', vendor, 'date:', order_date,
     'items:', items.length, 'subtotal:', subtotal, 'tax:', tax);
-  return { vendor, order_date: orderDate, items, subtotal, tax, total };
+  return { vendor, order_date, items, subtotal, tax, total };
 }
 
+
+// ── VISION OCR ────────────────────────────────────────────
+
+// ── SMART RECEIPT PARSER ────────────────────────────────
+
+// ── VISION OCR ────────────────────────────────────────────
+
+// ── SMART RECEIPT PARSER ────────────────────────────────
 
 // ── VISION OCR ────────────────────────────────────────────
 
@@ -1083,7 +1122,11 @@ function showPage(name) {
   if (name==='summary') renderSummary();
   if (name==='recurring') renderRecurring();
   if (name==='export') renderExportStats();
-  if (name==='settings' && folderNameSaved) document.getElementById('folderDisplay').value = folderNameSaved;
+  if (name==='settings') {
+    if (folderNameSaved) document.getElementById('folderDisplay').value = folderNameSaved;
+    const customKey = localStorage.getItem('str_gemini_key');
+    document.getElementById('geminiKeyStatus').textContent = customKey ? 'Using custom key' : 'Using built-in default key';
+  }
 }
 
 // ── RECURRING ─────────────────────────────────────────────
@@ -1196,6 +1239,23 @@ function saveGeminiKey() {
   document.getElementById('geminiKeyBanner').style.display = 'none';
   document.getElementById('geminiKeyInput').value = '';
   showToast('Gemini key saved — upload your receipt again');
+}
+
+// ── GEMINI KEY MANAGEMENT ────────────────────────────────
+function saveGeminiKey() {
+  const key = document.getElementById('geminiKeyInput').value.trim();
+  if (!key) { showToast('Enter a key first'); return; }
+  if (!key.startsWith('AIza')) { showToast('Key should start with AIza'); return; }
+  localStorage.setItem('str_gemini_key', key);
+  document.getElementById('geminiKeyStatus').textContent = 'Custom key saved';
+  showToast('Gemini key saved');
+}
+
+function clearGeminiKey() {
+  localStorage.removeItem('str_gemini_key');
+  document.getElementById('geminiKeyInput').value = '';
+  document.getElementById('geminiKeyStatus').textContent = 'Using built-in default key';
+  showToast('Reset to default key');
 }
 
 // ── INIT ──────────────────────────────────────────────────
