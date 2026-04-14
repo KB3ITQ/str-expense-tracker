@@ -196,17 +196,7 @@
 
     <div class="card">
       <div class="card-title">Step 1 — Receipt (optional)</div>
-      <!-- Gemini API key banner - shown when no key is set -->
-      <div id="geminiKeyBanner" style="display:none; background:var(--accent2-light); border:1px solid #D4A88A; border-radius:8px; padding:14px 16px; margin-bottom:12px;">
-        <div style="font-size:12px; color:var(--accent2); margin-bottom:8px; font-weight:500;">Gemini API key required for smart receipt scanning</div>
-        <div style="font-size:11px; color:var(--text2); margin-bottom:10px;">Get a free key at <strong>aistudio.google.com/app/apikey</strong> — select your STR Expense Tracker project</div>
-        <div style="display:flex; gap:8px;">
-          <input type="password" id="geminiKeyInput" placeholder="Paste API key here (AIza...)" style="flex:1; font-family:monospace;" />
-          <button class="btn btn-primary btn-sm" onclick="saveGeminiKey()">Save Key</button>
-        </div>
-      </div>
-
-      <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+            <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
         <svg class="upload-icon" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="30" height="26" rx="3"/><line x1="3" y1="14" x2="33" y2="14"/><line x1="18" y1="21" x2="18" y2="29"/><line x1="13" y1="25" x2="23" y2="25"/></svg>
         <div style="font-size:13px;color:var(--text2);">Upload receipt image or PDF</div>
         <div style="font-size:11px;color:var(--text3);margin-top:4px;" id="uploadHint">Sign in with Google to enable AI scanning &amp; auto-filing to Drive</div>
@@ -398,7 +388,6 @@
 
 <script>
 const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleusercontent.com';
-let GEMINI_API_KEY = localStorage.getItem('str_gemini_key') || null;
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/cloud-platform';
 
 let entries = JSON.parse(localStorage.getItem('str_entries_26') || '[]');
@@ -706,72 +695,6 @@ async function extractWithGemini(ocrText) {
 // ── VISION OCR ────────────────────────────────────────────
 
 // ── GEMINI EXTRACTION ────────────────────────────────────
-async function extractWithGemini(ocrText) {
-  const prompt = `You are a receipt parser. Extract data from this receipt OCR text and return ONLY valid JSON with no markdown, no explanation.
-
-Return this exact structure:
-{"vendor":"store name","order_date":"YYYY-MM-DD or null","items":[{"name":"item description","price":0.00}],"subtotal":0.00,"tax":0.00,"total":0.00}
-
-Rules:
-- vendor: the store/merchant name only (e.g. "Walmart", "Home Depot"), not the customer name
-- order_date: the ORDER or PURCHASE date (not delivery date). Format as YYYY-MM-DD. Return null if not found.
-- items: individual purchased line items with their prices. Do NOT include subtotal, tax, savings, tips, delivery fees, or totals as items.
-- subtotal: pre-tax merchandise total (after savings/discounts)
-- tax: sales tax amount only
-- total: final charged amount
-- Use null for any field you cannot find
-- For items with quantity > 1, use the total price for that line (not unit price)
-
-Receipt text:
-` + ocrText;
-
-  // Smart local parser — no API key needed
-  const geminiUrl = 'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
-  console.log('Calling Gemini URL:', geminiUrl.replace(GEMINI_API_KEY, 'KEY_HIDDEN'));
-  let response, lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) {
-      const wait = attempt * 3000;
-      document.getElementById('aiStatusText').textContent = `Rate limited — retrying in ${wait/1000}s...`;
-      await new Promise(r => setTimeout(r, wait));
-    }
-    response = await fetch(
-      geminiUrl,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 2048 }
-        })
-      }
-    );
-    if (response.ok) break;
-    const errData = await response.json();
-    console.error('Gemini attempt', attempt+1, 'failed:', response.status, errData);
-    lastErr = response.status;
-    if (response.status !== 429) break; // Only retry on rate limit
-  }
-  if (!response.ok) {
-    if (lastErr === 429) throw new Error('Gemini rate limit — try again in a minute');
-    throw new Error('Gemini API error: ' + lastErr);
-  }
-
-  const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  console.log('Gemini raw response:', rawText.substring(0, 500));
-
-  const clean = rawText.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(clean);
-
-  // Normalize field names (handle both order_date and date)
-  if (parsed.order_date && !parsed.date) parsed.date = parsed.order_date;
-
-  console.log('Gemini parsed — vendor:', parsed.vendor, 'date:', parsed.order_date,
-    'items:', parsed.items?.length, 'subtotal:', parsed.subtotal, 'tax:', parsed.tax);
-
-  return parsed;
-}
 
 
 async function visionOCR(b64) {
@@ -814,23 +737,6 @@ function renderPDF(dataUrl, resolve, reject) {
 }
 
 // ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
-
-
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -854,23 +760,6 @@ function renderPDF(dataUrl, resolve, reject) {
 }
 
 // ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
-
-
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -894,23 +783,6 @@ function renderPDF(dataUrl, resolve, reject) {
 }
 
 // ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
-
-
 
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
@@ -934,23 +806,6 @@ function renderPDF(dataUrl, resolve, reject) {
 }
 
 // ── VISION OCR ────────────────────────────────────────────
-async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
-  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
-    method:'POST',
-    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
-  });
-  console.log('Vision: HTTP status:', r.status);
-  const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
-  if (d.error) console.error('Vision API error:', d.error);
-  return text;
-}
-
-
 
 // ── FILE UPLOAD ───────────────────────────────────────────
 async function handleFileUpload(e) {
@@ -1333,12 +1188,6 @@ function saveEntries() { localStorage.setItem('str_entries_26',JSON.stringify(en
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast on'; setTimeout(()=>t.className='toast',3000); }
 
 // ── GEMINI KEY MANAGEMENT ────────────────────────────────
-function showGeminiKeyInput() {
-  document.getElementById('geminiKeyBanner').style.display = 'block';
-  document.getElementById('geminiKeyInput').focus();
-  showToast('Enter your Gemini API key to scan receipts');
-}
-
 function saveGeminiKey() {
   const key = document.getElementById('geminiKeyInput').value.trim();
   if (!key || !key.startsWith('AIza')) { showToast('Invalid key — should start with AIza'); return; }
