@@ -592,7 +592,7 @@ Receipt text:
 ` + ocrText;
 
     const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + key,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + key,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -664,14 +664,14 @@ function regexParser(ocrText) {
     }
   }
 
-  // Subtotal / tax / total
+  // Subtotal / tax / total — include Walmart-specific label variants
   const amountRe = (label) => {
     const m = ocrText.match(new RegExp(label + '[\\s\\n:$]*([0-9,]+\\.\\d{2})', 'i'));
     return m ? parseFloat(m[1].replace(/,/g,'')) : null;
   };
-  let subtotal = amountRe('subtotal');
-  let tax = amountRe('tax');
-  let total = amountRe('total');
+  let subtotal = amountRe('subtotal') ?? amountRe('item subtotal') ?? amountRe('merchandise subtotal');
+  let tax      = amountRe('tax') ?? amountRe('estimated tax') ?? amountRe('sales tax');
+  let total    = amountRe('total') ?? amountRe('order total') ?? amountRe('grand total') ?? amountRe('charged');
   if (!tax && subtotal && total) tax = Math.round((total - subtotal) * 100) / 100;
   if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
   const summaryAmounts = new Set([subtotal, tax, total].filter(Boolean).map(v => v.toFixed(2)));
@@ -679,13 +679,16 @@ function regexParser(ocrText) {
   // Items
   const items = [];
   const SKIP = /^(walmart|the home depot|amazon|sam.s club|target|order|invoice|ship|subtotal|savings|tax|total|free delivery|driver|tip|temporary|payment|your payment|this covers|if needed|#\d|^\d{4,}$|jan |feb |mar |apr |may |jun |jul |aug |sep |oct |nov |dec )/i;
+  // A captured "name" that is itself a price string (e.g. "$4.69" or "4.69") is not a real item name
+  const isPriceLike = (s) => /^\$?[\d,]+\.\d{2}$/.test(s.trim());
 
   // Walmart: "Item Name   Shopped Qty 1   $3.36"
   const walmartRe = /^(.+?)\s+(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+\d+\s+\$([\d,]+\.\d{2})/gim;
   let wm;
   while ((wm = walmartRe.exec(ocrText)) !== null) {
     const name = wm[1].trim(), price = parseFloat(wm[2].replace(/,/g,''));
-    if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && !SKIP.test(name)) items.push({name, price});
+    if (!isPriceLike(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && !SKIP.test(name))
+      items.push({name, price});
   }
 
   // Home Depot Pre Tax Amount column
@@ -716,7 +719,7 @@ function regexParser(ocrText) {
       const m = line.match(/^(.{5,}?)\s+\$?([\d,]+\.\d{2})(?:\s|$)/);
       if (m) {
         const name = m[1].trim(), price = parseFloat(m[2].replace(/,/g,''));
-        if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000 && !SKIP.test(name))
+        if (!isPriceLike(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000 && !SKIP.test(name))
           items.push({name, price});
       }
     }
