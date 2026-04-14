@@ -217,7 +217,7 @@
       </div>
 
       <div class="row3" id="taxRow" style="display:none;">
-        <div><label>Receipt Subtotal ($)</label><input type="number" id="recSub" step="0.01" oninput="recalcTax()"/></div>
+        <div><label>Receipt Subtotal ($) — tax only applied if all items deductible</label><input type="number" id="recSub" step="0.01" oninput="recalcTax()"/></div>
         <div><label>Receipt Tax ($)</label><input type="number" id="recTax" step="0.01" oninput="recalcTax()"/></div>
         <div><label>Tax Rate</label><input type="text" id="taxRate" readonly style="background:var(--surface2);color:var(--text2);"/></div>
       </div>
@@ -976,8 +976,12 @@ function recalcTax() {
 }
 
 function recalcTotal() {
-  const dedSub = items.filter(i=>i.ded).reduce((s,i)=>s+i.price,0);
-  const tot = taxRate>0 ? Math.round(dedSub*(1+taxRate)*100)/100 : dedSub;
+  const dedItems = items.filter(i=>i.ded);
+  const dedSub = dedItems.reduce((s,i)=>s+i.price,0);
+  // Only add tax if every item on the receipt is being deducted
+  // Mixed receipts (some unchecked) = skip tax, can't accurately apportion
+  const allDeductible = items.length > 0 && dedItems.length === items.length;
+  const tot = (taxRate>0 && allDeductible) ? Math.round(dedSub*(1+taxRate)*100)/100 : dedSub;
   document.getElementById('expTotal').value = tot.toFixed(2);
   updatePreview();
 }
