@@ -545,77 +545,62 @@ function renderPDF(dataUrl, resolve, reject) {
 
 
 // ── VISION OCR ────────────────────────────────────────────
-function parseOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  // Vendor: collect lines before order/company info
-  let vendorLines = [];
-  for (const line of lines) {
-    if (/^(order|invoice|ship|oconnor|kevin|\d{5,})/i.test(line)) break;
-    vendorLines.push(line);
-    if (vendorLines.length >= 3) break;
-  }
-  let vendor = vendorLines.join(' ').trim() || 'Unknown';
-  // Home Depot OCR splits "THE HOME DEPOT" across lines into "THE DEPOT HOME" — fix it
-  if (/home/i.test(vendor) && /depot/i.test(vendor)) vendor = 'THE HOME DEPOT';
+// ── GEMINI EXTRACTION ────────────────────────────────────
+async function extractWithGemini(ocrText) {
+  const prompt = `You are a receipt parser. Extract data from this receipt OCR text and return ONLY valid JSON with no markdown, no explanation.
 
-  // Date: prefer "Ordered", skip "Delivered"
-  let orderDate = null;
-  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
-  if (!orderDate) {
-    for (const m of [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)]) {
-      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
-      if (before.includes('deliver')) continue;
-      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+Return this exact structure:
+{"vendor":"store name","order_date":"YYYY-MM-DD or null","items":[{"name":"item description","price":0.00}],"subtotal":0.00,"tax":0.00,"total":0.00}
+
+Rules:
+- vendor: the store/merchant name only (e.g. "Walmart", "Home Depot"), not the customer name
+- order_date: the ORDER or PURCHASE date (not delivery date). Format as YYYY-MM-DD. Return null if not found.
+- items: individual purchased line items with their prices. Do NOT include subtotal, tax, savings, tips, delivery fees, or totals as items.
+- subtotal: pre-tax merchandise total (after savings/discounts)
+- tax: sales tax amount only
+- total: final charged amount
+- Use null for any field you cannot find
+- For items with quantity > 1, use the total price for that line (not unit price)
+
+Receipt text:
+` + ocrText;
+
+  const response = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+      })
     }
+  );
+
+  if (!response.ok) {
+    const err = await response.json();
+    console.error('Gemini error:', err);
+    throw new Error('Gemini API error: ' + response.status);
   }
 
-  // Labeled subtotal/tax/total
-  let subtotal = null, tax = null, total = null;
-  const subM = text.match(/subtotal[\s\n:]+\$?([\d,]+\.\d{2})/i);
-  const taxM = text.match(/(?:sales\s+)?tax[\s\n:]+\$?([\d,]+\.\d{2})/i);
-  const totM = text.match(/(?:order\s+)?total[\s\n:]+\$?([\d,]+\.\d{2})/i);
-  if (subM) subtotal = parseFloat(subM[1].replace(/,/g,''));
-  if (taxM) tax = parseFloat(taxM[1].replace(/,/g,''));
-  if (totM) total = parseFloat(totM[1].replace(/,/g,''));
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  console.log('Gemini raw response:', rawText.substring(0, 500));
 
-  // Home Depot "Pre Tax Amount" column: amounts appear as unit_price, 0.00, 0.00, pretax_total
-  if (!subtotal) {
-    const ptIdx = text.indexOf('Pre Tax Amount');
-    if (ptIdx !== -1) {
-      const after = text.substring(ptIdx);
-      const footerIdx = after.search(/SKU|Printed On|Page \d/i);
-      const section = footerIdx > -1 ? after.substring(0, footerIdx) : after;
-      const amounts = [...section.matchAll(/\$([\d,]+\.\d{2})/g)]
-        .map(m => parseFloat(m[1].replace(/,/g,'')))
-        .filter(a => a > 0);
-      if (amounts.length > 0) subtotal = amounts[amounts.length - 1];
-    }
-  }
+  const clean = rawText.replace(/```json|```/g, '').trim();
+  const parsed = JSON.parse(clean);
 
-  // Infer missing values
-  if (!tax && subtotal && total) tax = Math.round((total - subtotal) * 100) / 100;
-  if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
+  // Normalize field names (handle both order_date and date)
+  if (parsed.order_date && !parsed.date) parsed.date = parsed.order_date;
 
-  // Item description: find best product line after "Pre Tax Amount" header
-  let itemDesc = vendor;
-  const ptIdx2 = text.indexOf('Pre Tax Amount');
-  if (ptIdx2 !== -1) {
-    const sectionLines = text.substring(ptIdx2).split('\n').map(l=>l.trim()).filter(Boolean);
-    for (const l of sectionLines.slice(1)) {
-      if (/^[\$\d]/.test(l) || /^(qty|sku|printed|page|hardware$|\d+$)/i.test(l)) break;
-      if (l.length > 10 && !/^(pre tax|unit price|discount|net unit)/i.test(l)) {
-        itemDesc = l; break;
-      }
-    }
-  }
+  console.log('Gemini parsed — vendor:', parsed.vendor, 'date:', parsed.order_date,
+    'items:', parsed.items?.length, 'subtotal:', parsed.subtotal, 'tax:', parsed.tax);
 
-  const itemLines = subtotal ? [{name: itemDesc, price: subtotal}] : [];
-
-  console.log('parseOCR — vendor:', vendor, 'date:', orderDate,
-    'items:', itemLines.length, 'subtotal:', subtotal, 'tax:', tax);
-  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
+  return parsed;
 }
 
 
@@ -823,20 +808,43 @@ async function handleFileUpload(e) {
 
     let parsed = null;
     if (token) {
-      try { const txt = await visionOCR(b64); parsed = parseOCR(txt); } catch(err) { console.error('Vision error:', err); showToast('Vision scan failed — enter manually'); }
+      try {
+        const ocrText = await visionOCR(b64);
+        console.log('OCR text length:', ocrText.length);
+        if (ocrText.length > 10) {
+          parsed = await extractWithGemini(ocrText);
+        } else {
+          showToast('Could not read receipt — try a clearer image');
+        }
+      } catch(err) {
+        console.error('Scan error:', err);
+        showToast('Scan failed — enter manually');
+      }
     }
     status.className = 'ai-status';
     if (parsed?.vendor) {
       document.getElementById('expVendor').value = parsed.vendor;
-      if (parsed.orderDate) document.getElementById('expDate').value = parsed.orderDate;
+      const parsedDate = parsed.order_date || parsed.orderDate || null;
+      if (parsedDate) document.getElementById('expDate').value = parsedDate;
       document.getElementById('bannerVendor').textContent = parsed.vendor;
-      document.getElementById('bannerDate').textContent = parsed.orderDate ? 'Order date: ' + parsed.orderDate : 'Date not detected — verify above';
+      const bannerDate = parsed.order_date || parsed.orderDate || null;
+      document.getElementById('bannerDate').textContent = bannerDate ? 'Order date: ' + bannerDate : 'Date not detected — verify above';
       document.getElementById('receiptBanner').style.display = 'block';
-      items = parsed.items?.length ? parsed.items.map(i=>({...i,ded:true})) : (parsed.subtotal ? [{name:parsed.vendor,price:parsed.subtotal,ded:true}] : []);
-      if (parsed.subtotal && parsed.tax) setTaxInfo(parsed.subtotal, parsed.tax);
+      // Gemini returns items with {name, price} — map to our format
+      if (parsed.items && parsed.items.length > 0) {
+        items = parsed.items.map(i => ({name: i.name, price: parseFloat(i.price) || 0, ded: true}));
+      } else if (parsed.subtotal) {
+        items = [{name: parsed.vendor, price: parsed.subtotal, ded: true}];
+      } else {
+        items = [];
+      }
+      const pSub = parseFloat(parsed.subtotal) || 0;
+      const pTax = parseFloat(parsed.tax) || 0;
+      if (pSub > 0 && pTax > 0) setTaxInfo(pSub, pTax);
       else { taxRate = 0; document.getElementById('taxRow').style.display = 'none'; }
       renderItems(); autoSuggestCat(parsed.vendor);
-      if (parsed.orderDate) buildFileName(parsed.orderDate, parsed.vendor, file.name);
+      const fileDate = parsed.order_date || parsed.orderDate || null;
+      if (fileDate) buildFileName(fileDate, parsed.vendor, file.name);
       showToast('Receipt scanned — review items below');
     } else {
       document.getElementById('bannerVendor').textContent = file.name;
