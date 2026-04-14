@@ -505,13 +505,19 @@ function setFolder(id, name) {
 
 // ── VISION OCR ────────────────────────────────────────────
 async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
   const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
     method:'POST',
     headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
   });
+  console.log('Vision: HTTP status:', r.status);
   const d = await r.json();
-  return d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
 }
 
 function parseOCR(text) {
