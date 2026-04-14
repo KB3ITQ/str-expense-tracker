@@ -525,14 +525,151 @@ async function pdfToImageB64(dataUrl) {
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
     pdf.getPage(1).then(page => {
-      const scale = 2.0;
+      const scale = 1.5;
       const viewport = page.getViewport({scale});
       const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
+        resolve(jpegDataUrl.split(',')[1]);
+      }).catch(reject);
+    }).catch(reject);
+  }).catch(reject);
+}
+
+// ── VISION OCR ────────────────────────────────────────────
+async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  console.log('Vision: HTTP status:', r.status);
+  const d = await r.json();
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
+}
+
+function parseOCR(text) {
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+
+  // Vendor: join first meaningful lines before order/invoice info
+  const skipStart = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
+  let vendorLines = [];
+  for (const line of lines) {
+    if (skipStart.test(line)) break;
+    vendorLines.push(line);
+    if (vendorLines.length >= 3) break;
+  }
+  const vendor = vendorLines.join(' ').trim() || 'Unknown';
+
+  // Date: prefer "Ordered" date, skip "Delivered"
+  let orderDate = null;
+  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+  if (!orderDate) {
+    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
+    for (const m of allDates) {
+      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
+      if (before.includes('deliver')) continue;
+      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+    }
+  }
+
+  // Extract ALL dollar amounts in document order
+  const allAmounts = [];
+  const amountRe = /\$([\d,]+\.\d{2})/g;
+  let am;
+  while ((am = amountRe.exec(text)) !== null) {
+    allAmounts.push(parseFloat(am[1].replace(/,/g,'')));
+  }
+  const nonZeroAmounts = allAmounts.filter(a => a > 0);
+
+  // Try labeled extraction for subtotal/tax/total
+  let subtotal = null, tax = null, total = null;
+  const subLabelM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const taxLabelM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const totLabelM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  if (subLabelM) subtotal = parseFloat(subLabelM[1].replace(/,/g,''));
+  if (taxLabelM) tax = parseFloat(taxLabelM[1].replace(/,/g,''));
+  if (totLabelM) total = parseFloat(totLabelM[1].replace(/,/g,''));
+
+  // Home Depot style: look for "Pre Tax Amount" header, then find the column value
+  // The amounts after the column headers appear as: unit_price, discount, net_unit, pre_tax
+  // We want the pre_tax value which is the last amount in the item row
+  if (!subtotal) {
+    const preTaxIdx = text.indexOf('Pre Tax Amount');
+    if (preTaxIdx !== -1) {
+      // Find all amounts after "Pre Tax Amount" header, before any SKU/footer
+      const afterHeader = text.substring(preTaxIdx);
+      const skuIdx = afterHeader.search(/SKU|Printed On|Page \d/i);
+      const itemSection = skuIdx > -1 ? afterHeader.substring(0, skuIdx) : afterHeader;
+      const itemAmounts = [];
+      const iar = /\$([\d,]+\.\d{2})/g;
+      let im;
+      while ((im = iar.exec(itemSection)) !== null) {
+        itemAmounts.push(parseFloat(im[1].replace(/,/g,'')));
+      }
+      // In HD format: unit_price, discount(0), net_unit(0), pre_tax_total
+      // The last non-zero amount in the item row is the pre-tax total
+      const nonZero = itemAmounts.filter(a => a > 0);
+      if (nonZero.length > 0) {
+        subtotal = nonZero[nonZero.length - 1];
+      }
+    }
+  }
+
+  // If still no subtotal, use the largest amount as best guess
+  if (!subtotal && nonZeroAmounts.length > 0) {
+    subtotal = Math.max(...nonZeroAmounts);
+  }
+
+  // Find item description — look for long descriptive lines before the amounts
+  let itemDesc = vendor;
+  const descCandidates = lines.filter(l =>
+    l.length > 15 &&
+    !/^(the|order|invoice|ship|qty|unit|discount|net|pre tax|sku|printed|page|\d)/i.test(l) &&
+    !/^[\$\d]/.test(l) &&
+    !['oconnor','management','item description','hardware'].includes(l.toLowerCase())
+  );
+  if (descCandidates.length > 0) {
+    // Pick the most descriptive line (longest one that looks like a product)
+    const productLine = descCandidates.sort((a,b) => b.length - a.length)[0];
+    if (productLine && productLine.length > 10) itemDesc = productLine;
+  }
+
+  const itemLines = subtotal ? [{name: itemDesc, price: subtotal}] : [];
+
+  console.log('parseOCR — vendor:', vendor, 'date:', orderDate,
+    'items:', JSON.stringify(itemLines), 'subtotal:', subtotal, 'tax:', tax, 'total:', total);
+  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
+}
+
+function renderPDF(dataUrl, resolve, reject) {
+  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
+    pdf.getPage(1).then(page => {
+      const scale = 1.5;
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      page.render({canvasContext: ctx, viewport}).promise.then(() => {
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
         resolve(jpegDataUrl.split(',')[1]);
       }).catch(reject);
     }).catch(reject);
@@ -676,14 +813,18 @@ function parseOCR(text) {
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
     pdf.getPage(1).then(page => {
-      const scale = 2.0;
+      const scale = 1.5;
       const viewport = page.getViewport({scale});
       const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
         resolve(jpegDataUrl.split(',')[1]);
       }).catch(reject);
     }).catch(reject);
@@ -809,14 +950,18 @@ function parseOCR(text) {
 function renderPDF(dataUrl, resolve, reject) {
   pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
     pdf.getPage(1).then(page => {
-      const scale = 2.0;
+      const scale = 1.5;
       const viewport = page.getViewport({scale});
       const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
         resolve(jpegDataUrl.split(',')[1]);
       }).catch(reject);
     }).catch(reject);
