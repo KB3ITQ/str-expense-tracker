@@ -364,7 +364,7 @@
       <div style="display:flex;gap:8px;">
         <input type="password" id="geminiKeyInput" placeholder="Paste your Gemini API key here (AIza...)" style="flex:1;font-family:monospace;"/>
         <button class="btn btn-sm btn-primary" onclick="saveGeminiKey()">Save</button>
-        <button class="btn btn-sm" onclick="clearGeminiKey()">Reset to default</button>
+        <button class="btn btn-sm" onclick="clearGeminiKey()">Clear key</button>
       </div>
       <div style="font-size:11px;color:var(--text3);margin-top:6px;" id="geminiKeyStatus"></div>
     </div>
@@ -538,23 +538,18 @@ function renderPDF(dataUrl, resolve, reject) {
       const scale = 1.5;
       const viewport = page.getViewport({scale});
       const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = 'white';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
+        resolve(canvas.toDataURL('image/jpeg', 0.92).split(',')[1]);
       }).catch(reject);
     }).catch(reject);
   }).catch(reject);
 }
 
-
-// ── VISION OCR ────────────────────────────────────────────
 
 // ── RECEIPT PARSER (Gemini AI + regex fallback) ──────────
 function getGeminiKey() {
@@ -570,19 +565,28 @@ async function extractWithGemini(ocrText) {
       showToast('Set your Gemini API key in Settings for smart scanning');
       return regexParser(ocrText);
     }
-    const prompt = `You are a receipt parser. Extract data from this receipt OCR text and return ONLY valid JSON with no markdown.
+    const prompt = `You are a receipt parser for US retail stores. Extract structured data from this OCR text and return ONLY valid JSON — no markdown, no explanation, no code fences.
 
 Return exactly this structure:
 {"vendor":"store name","order_date":"YYYY-MM-DD or null","items":[{"name":"item description","price":0.00}],"subtotal":0.00,"tax":0.00,"total":0.00}
 
-Rules:
-- vendor: merchant name only (e.g. "Walmart", "Home Depot"), not customer name
-- order_date: the ORDER or PURCHASE date (not delivery). Format YYYY-MM-DD. null if not found.
-- items: purchased line items with pre-tax prices. Do NOT include subtotal, tax, savings, tips, delivery fees as items.
-- subtotal: pre-tax merchandise total after any discounts/savings
-- tax: sales tax amount only
-- total: final charged amount
-- Use null for unknown fields
+CRITICAL rules — read carefully before parsing:
+- vendor: the STORE name only (e.g. "Walmart", "Home Depot"). Never a customer or member name.
+- order_date: PURCHASE/ORDER date only — not delivery or estimated date. Format YYYY-MM-DD. Use null if not found.
+- items: individual purchased merchandise with pre-tax unit prices.
+  * IMPORTANT: "name" MUST be a plain text product description (e.g. "Paper Towels 6pk", "Dish Soap 32oz").
+    A "name" must NEVER be a dollar amount, a price, or contain only digits/symbols.
+  * "price" must be a positive number (no $ sign). Never null or negative.
+  * DO NOT include as items: subtotal lines, tax lines, savings/discounts, tips, delivery fees,
+    "Grocery Pickup", "Weighted/Substituted" adjustment lines, "Qty" lines with no product name,
+    or any line whose "name" would be a price or number.
+- Walmart pickup/delivery receipts: items appear like "PRODUCT NAME   Shopped Qty N   $X.XX"
+  — extract the product name text before "Shopped" as the name, and the dollar amount as the price.
+  Walmart may also list items as "ITEM NAME\n$X.XX\nShopped Qty N" across multiple lines — handle both layouts.
+- subtotal: pre-tax merchandise total after any discounts. Number, no $ sign.
+- tax: sales tax only. Number, no $ sign.
+- total: final amount charged. Number, no $ sign.
+- Use null for unknown or missing numeric fields (not 0).
 
 Receipt text:
 ` + ocrText;
@@ -725,129 +729,20 @@ function regexParser(ocrText) {
   return { vendor, order_date, items, subtotal, tax, total };
 }
 
-
 // ── VISION OCR ────────────────────────────────────────────
-
-// ── SMART RECEIPT PARSER ────────────────────────────────
-
-// ── VISION OCR ────────────────────────────────────────────
-
-// ── SMART RECEIPT PARSER ────────────────────────────────
-
-// ── VISION OCR ────────────────────────────────────────────
-
-// ── GEMINI EXTRACTION ────────────────────────────────────
-
-
 async function visionOCR(b64) {
-  console.log('Vision: calling API, token present:', !!token);
   const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
     method:'POST',
     headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
   });
-  console.log('Vision: HTTP status:', r.status);
   const d = await r.json();
-  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
-  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
-  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
   if (d.error) console.error('Vision API error:', d.error);
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision OCR: status', r.status, '— text length', text.length);
   return text;
 }
 
-
-
-function renderPDF(dataUrl, resolve, reject) {
-  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
-    pdf.getPage(1).then(page => {
-      const scale = 1.5;
-      const viewport = page.getViewport({scale});
-      const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
-      }).catch(reject);
-    }).catch(reject);
-  }).catch(reject);
-}
-
-// ── VISION OCR ────────────────────────────────────────────
-
-function renderPDF(dataUrl, resolve, reject) {
-  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
-    pdf.getPage(1).then(page => {
-      const scale = 1.5;
-      const viewport = page.getViewport({scale});
-      const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
-      }).catch(reject);
-    }).catch(reject);
-  }).catch(reject);
-}
-
-// ── VISION OCR ────────────────────────────────────────────
-
-function renderPDF(dataUrl, resolve, reject) {
-  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
-    pdf.getPage(1).then(page => {
-      const scale = 1.5;
-      const viewport = page.getViewport({scale});
-      const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
-      }).catch(reject);
-    }).catch(reject);
-  }).catch(reject);
-}
-
-// ── VISION OCR ────────────────────────────────────────────
-
-function renderPDF(dataUrl, resolve, reject) {
-  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
-    pdf.getPage(1).then(page => {
-      const scale = 1.5;
-      const viewport = page.getViewport({scale});
-      const canvas = document.createElement('canvas');
-      // Ensure we capture the full page height
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      page.render({canvasContext: ctx, viewport}).promise.then(() => {
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
-        resolve(jpegDataUrl.split(',')[1]);
-      }).catch(reject);
-    }).catch(reject);
-  }).catch(reject);
-}
-
-// ── VISION OCR ────────────────────────────────────────────
 
 // ── FILE UPLOAD ───────────────────────────────────────────
 async function handleFileUpload(e) {
@@ -866,7 +761,6 @@ async function handleFileUpload(e) {
     if (mimeType === 'application/pdf') {
       try {
         b64 = await pdfToImageB64(ev.target.result);
-        console.log('PDF converted to image, b64 length:', b64.length);
       } catch(err) {
         console.error('PDF conversion failed:', err);
         showToast('Could not convert PDF — try uploading as image');
@@ -877,7 +771,6 @@ async function handleFileUpload(e) {
     if (token) {
       try {
         const ocrText = await visionOCR(b64);
-        console.log('OCR text length:', ocrText.length);
         if (ocrText.length > 10) {
           parsed = await extractWithGemini(ocrText);
         } else {
@@ -890,14 +783,12 @@ async function handleFileUpload(e) {
     }
     status.className = 'ai-status';
     if (parsed?.vendor) {
+      const receiptDate = parsed.order_date || null;
       document.getElementById('expVendor').value = parsed.vendor;
-      const parsedDate = parsed.order_date || parsed.orderDate || null;
-      if (parsedDate) document.getElementById('expDate').value = parsedDate;
+      if (receiptDate) document.getElementById('expDate').value = receiptDate;
       document.getElementById('bannerVendor').textContent = parsed.vendor;
-      const bannerDate = parsed.order_date || parsed.orderDate || null;
-      document.getElementById('bannerDate').textContent = bannerDate ? 'Order date: ' + bannerDate : 'Date not detected — verify above';
+      document.getElementById('bannerDate').textContent = receiptDate ? 'Order date: ' + receiptDate : 'Date not detected — verify above';
       document.getElementById('receiptBanner').style.display = 'block';
-      // Gemini returns items with {name, price} — map to our format
       if (parsed.items && parsed.items.length > 0) {
         items = parsed.items.map(i => ({name: i.name, price: parseFloat(i.price) || 0, ded: true}));
       } else if (parsed.subtotal) {
@@ -910,8 +801,7 @@ async function handleFileUpload(e) {
       if (pSub > 0 && pTax > 0) setTaxInfo(pSub, pTax);
       else { taxRate = 0; document.getElementById('taxRow').style.display = 'none'; }
       renderItems(); autoSuggestCat(parsed.vendor);
-      const fileDate = parsed.order_date || parsed.orderDate || null;
-      if (fileDate) buildFileName(fileDate, parsed.vendor, file.name);
+      if (receiptDate) buildFileName(receiptDate, parsed.vendor, file.name);
       showToast('Receipt scanned — review items below');
     } else {
       document.getElementById('bannerVendor').textContent = file.name;
@@ -1131,8 +1021,7 @@ function showPage(name) {
   if (name==='export') renderExportStats();
   if (name==='settings') {
     if (folderNameSaved) document.getElementById('folderDisplay').value = folderNameSaved;
-    const customKey = localStorage.getItem('str_gemini_key');
-    document.getElementById('geminiKeyStatus').textContent = customKey ? 'Using custom key' : 'Using built-in default key';
+    _renderGeminiStatus();
   }
 }
 
@@ -1161,9 +1050,7 @@ function useRec(i) {
   setProp(r.prop);
   setTimeout(() => {
     if (r.prop==='pearl'||r.prop==='both') document.getElementById('pearlCat').value = r.cat;
-    if (r.prop==='jays'||r.prop==='both') {
-      document.getElementById('jaysCat').value = r.vendor.toLowerCase()==='pricelabs' ? 'Legal and professional services' : r.cat;
-    }
+    if (r.prop==='jays'||r.prop==='both') document.getElementById('jaysCat').value = r.cat;
     updateCatPreview(); updatePreview();
   }, 50);
   showToast('Loaded: ' + r.vendor);
@@ -1238,34 +1125,37 @@ function saveEntries() { localStorage.setItem('str_entries_26',JSON.stringify(en
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast on'; setTimeout(()=>t.className='toast',3000); }
 
 // ── GEMINI KEY MANAGEMENT ────────────────────────────────
-function saveGeminiKey() {
-  const key = document.getElementById('geminiKeyInput').value.trim();
-  if (!key || !key.startsWith('AIza')) { showToast('Invalid key — should start with AIza'); return; }
-  GEMINI_API_KEY = key;
-  localStorage.setItem('str_gemini_key', key);
-  document.getElementById('geminiKeyBanner').style.display = 'none';
-  document.getElementById('geminiKeyInput').value = '';
-  showToast('Gemini key saved — upload your receipt again');
+function _renderGeminiStatus() {
+  const saved = localStorage.getItem('str_gemini_key');
+  const el = document.getElementById('geminiKeyStatus');
+  if (saved) {
+    el.textContent = '✓ Key saved: ' + saved.substring(0, 8) + '••••••••••••';
+    el.style.color = 'var(--accent)';
+  } else {
+    el.textContent = '⚠ No key saved — Gemini receipt scanning is disabled';
+    el.style.color = 'var(--accent2)';
+  }
 }
 
-// ── GEMINI KEY MANAGEMENT ────────────────────────────────
 function saveGeminiKey() {
   const key = document.getElementById('geminiKeyInput').value.trim();
   if (!key) { showToast('Enter a key first'); return; }
-  if (!key.startsWith('AIza')) { showToast('Key should start with AIza'); return; }
+  if (!key.startsWith('AIza')) { showToast('Key should start with AIza…'); return; }
   localStorage.setItem('str_gemini_key', key);
-  document.getElementById('geminiKeyStatus').textContent = 'Custom key saved';
-  showToast('Gemini key saved');
+  document.getElementById('geminiKeyInput').value = '';
+  _renderGeminiStatus();
+  showToast('Gemini key saved — ready to scan receipts');
 }
 
 function clearGeminiKey() {
   localStorage.removeItem('str_gemini_key');
   document.getElementById('geminiKeyInput').value = '';
-  document.getElementById('geminiKeyStatus').textContent = 'Using built-in default key';
-  showToast('Reset to default key');
+  _renderGeminiStatus();
+  showToast('Gemini key cleared');
 }
 
 // ── INIT ──────────────────────────────────────────────────
+_renderGeminiStatus();   // show saved-key status in Settings on load
 document.getElementById('expDate').valueAsDate = new Date();
 document.getElementById('expVendor').addEventListener('input', function() { autoSuggestCat(this.value); updatePreview(); });
 document.getElementById('expDate').addEventListener('input', updatePreview);
