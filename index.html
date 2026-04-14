@@ -563,6 +563,130 @@ async function visionOCR(b64) {
 function parseOCR(text) {
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
 
+  // Vendor: collect lines before "Order #" or similar, join in order
+  let vendorLines = [];
+  for (const line of lines) {
+    if (/^(order|invoice|ship|#|\d{5,}|oconnor|kevin)/i.test(line)) break;
+    if (line.toLowerCase() === 'llc') { vendorLines.push(line); break; }
+    vendorLines.push(line);
+    if (vendorLines.length >= 3) break;
+  }
+  // Join and clean — remove trailing LLC/company suffixes that aren't the store
+  let vendor = vendorLines.join(' ').trim() || 'Unknown';
+  // Fix word-order issues from multi-line OCR (e.g. "THE
+DEPOT
+HOME" -> "THE HOME DEPOT")
+  // If vendor contains "DEPOT" and "HOME" out of order, fix it
+  if (/depot/i.test(vendor) && /home/i.test(vendor)) {
+    vendor = 'THE HOME DEPOT';
+  }
+
+  // Date: prefer "Ordered" date, skip "Delivered"
+  let orderDate = null;
+  const orderedM = text.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+  if (!orderDate) {
+    const allDates = [...text.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)];
+    for (const m of allDates) {
+      const before = text.substring(Math.max(0, m.index-40), m.index).toLowerCase();
+      if (before.includes('deliver')) continue;
+      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+    }
+  }
+
+  // Extract labeled subtotal/tax/total
+  let subtotal = null, tax = null, total = null;
+  const subLabelM = text.match(/subtotal[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const taxLabelM = text.match(/(?:sales\s+)?tax[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  const totLabelM = text.match(/(?:order\s+)?total[:\s\n]+\$?([\d,]+\.\d{2})/i);
+  if (subLabelM) subtotal = parseFloat(subLabelM[1].replace(/,/g,''));
+  if (taxLabelM) tax = parseFloat(taxLabelM[1].replace(/,/g,''));
+  if (totLabelM) total = parseFloat(totLabelM[1].replace(/,/g,''));
+
+  // Home Depot "Pre Tax Amount" column format
+  if (!subtotal) {
+    const preTaxIdx = text.indexOf('Pre Tax Amount');
+    if (preTaxIdx !== -1) {
+      const afterHeader = text.substring(preTaxIdx);
+      const footerIdx = afterHeader.search(/SKU|Printed On|Page \d/i);
+      const itemSection = footerIdx > -1 ? afterHeader.substring(0, footerIdx) : afterHeader;
+      const amounts = [...itemSection.matchAll(/\$([\d,]+\.\d{2})/g)]
+        .map(m => parseFloat(m[1].replace(/,/g,'')))
+        .filter(a => a > 0);
+      if (amounts.length > 0) subtotal = amounts[amounts.length - 1];
+    }
+  }
+
+  // Infer tax from total if labeled total exists
+  if (!tax && total && subtotal) tax = Math.round((total - subtotal) * 100) / 100;
+
+  // Infer total from subtotal + tax
+  if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
+
+  // Find best item description — look for product description lines
+  // These are long lines appearing after the column headers, before the amounts
+  const BAD_DESC = /^(the|order|invoice|ship|qty|unit price|discount|net unit|pre tax|sku|printed|page|\d|hardware$|oconnor|management llc)/i;
+  let itemDesc = vendor;
+  // Find lines between "Pre Tax Amount" header and the first $ amount after it
+  const preTaxIdx2 = text.indexOf('Pre Tax Amount');
+  if (preTaxIdx2 !== -1) {
+    const section = text.substring(preTaxIdx2);
+    const sectionLines = section.split('\n').map(l=>l.trim()).filter(Boolean);
+    for (const l of sectionLines.slice(1)) { // skip "Pre Tax Amount" itself
+      if (/^\$/.test(l) || /^\d+$/.test(l)) break; // hit the amounts
+      if (l.length > 15 && !BAD_DESC.test(l)) { itemDesc = l; break; }
+    }
+  }
+
+  // Build single line item using subtotal (pre-tax amount)
+  const itemLines = subtotal ? [{name: itemDesc, price: subtotal}] : [];
+
+  console.log('parseOCR — vendor:', vendor, 'date:', orderDate,
+    'items:', JSON.stringify(itemLines), 'subtotal:', subtotal, 'tax:', tax, 'total:', total);
+  return { vendor, orderDate, items: itemLines, subtotal, tax, total };
+}
+
+function renderPDF(dataUrl, resolve, reject) {
+  pdfjsLib.getDocument(dataUrl).promise.then(pdf => {
+    pdf.getPage(1).then(page => {
+      const scale = 1.5;
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      // Ensure we capture the full page height
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      page.render({canvasContext: ctx, viewport}).promise.then(() => {
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        console.log('PDF rendered to canvas:', canvas.width, 'x', canvas.height);
+        resolve(jpegDataUrl.split(',')[1]);
+      }).catch(reject);
+    }).catch(reject);
+  }).catch(reject);
+}
+
+// ── VISION OCR ────────────────────────────────────────────
+async function visionOCR(b64) {
+  console.log('Vision: calling API, token present:', !!token);
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+    method:'POST',
+    headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{image:{content:b64},features:[{type:'DOCUMENT_TEXT_DETECTION'}]}]})
+  });
+  console.log('Vision: HTTP status:', r.status);
+  const d = await r.json();
+  console.log('Vision: response:', JSON.stringify(d).substring(0,500));
+  const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
+  console.log('Vision: text length:', text.length, 'preview:', text.substring(0,300));
+  if (d.error) console.error('Vision API error:', d.error);
+  return text;
+}
+
+function parseOCR(text) {
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+
   // Vendor: join first meaningful lines before order/invoice info
   const skipStart = /^(order|invoice|ship|#|\d{4,}|oconnor|kevin|llc$)/i;
   let vendorLines = [];
