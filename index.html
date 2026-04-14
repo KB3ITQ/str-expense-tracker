@@ -605,7 +605,11 @@ Receipt text:
 
     if (!response.ok) {
       const err = await response.json();
-      console.warn('Gemini failed:', response.status, err?.error?.message, '— falling back to regex parser');
+      const msg = err?.error?.message || '';
+      if (response.status === 429) {
+        showToast('Gemini quota exceeded — enable billing at aistudio.google.com (free tier limit hit)');
+      }
+      console.warn('Gemini failed:', response.status, msg, '— falling back to regex parser');
       return regexParser(ocrText);
     }
 
@@ -770,6 +774,7 @@ async function visionOCR(b64) {
   if (d.error) console.error('Vision API error:', d.error);
   const text = d.responses?.[0]?.fullTextAnnotation?.text || '';
   console.log('Vision OCR: status', r.status, '— text length', text.length);
+  console.log('Vision OCR text (first 1200 chars):\n' + text.substring(0, 1200));
   return text;
 }
 
