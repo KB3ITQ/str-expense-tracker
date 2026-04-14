@@ -196,6 +196,16 @@
 
     <div class="card">
       <div class="card-title">Step 1 — Receipt (optional)</div>
+      <!-- Gemini API key banner - shown when no key is set -->
+      <div id="geminiKeyBanner" style="display:none; background:var(--accent2-light); border:1px solid #D4A88A; border-radius:8px; padding:14px 16px; margin-bottom:12px;">
+        <div style="font-size:12px; color:var(--accent2); margin-bottom:8px; font-weight:500;">Gemini API key required for smart receipt scanning</div>
+        <div style="font-size:11px; color:var(--text2); margin-bottom:10px;">Get a free key at <strong>aistudio.google.com/app/apikey</strong> — select your STR Expense Tracker project</div>
+        <div style="display:flex; gap:8px;">
+          <input type="password" id="geminiKeyInput" placeholder="Paste API key here (AIza...)" style="flex:1; font-family:monospace;" />
+          <button class="btn btn-primary btn-sm" onclick="saveGeminiKey()">Save Key</button>
+        </div>
+      </div>
+
       <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
         <svg class="upload-icon" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="30" height="26" rx="3"/><line x1="3" y1="14" x2="33" y2="14"/><line x1="18" y1="21" x2="18" y2="29"/><line x1="13" y1="25" x2="23" y2="25"/></svg>
         <div style="font-size:13px;color:var(--text2);">Upload receipt image or PDF</div>
@@ -568,10 +578,8 @@ Receipt text:
 ` + ocrText;
 
   if (!GEMINI_API_KEY) {
-    const key = prompt('Enter your Gemini API key to enable smart receipt parsing:\n\nGet it free at: aistudio.google.com/app/apikey');
-    if (!key) throw new Error('No API key provided');
-    GEMINI_API_KEY = key.trim();
-    localStorage.setItem('str_gemini_key', GEMINI_API_KEY);
+    showGeminiKeyInput();
+    throw new Error('No Gemini API key — enter it in the banner above');
   }
   const response = await fetch(
     'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=' + GEMINI_API_KEY,
@@ -1167,6 +1175,23 @@ function renderExportStats() { document.getElementById('exportStats').textConten
 // ── UTILS ─────────────────────────────────────────────────
 function saveEntries() { localStorage.setItem('str_entries_26',JSON.stringify(entries)); }
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast on'; setTimeout(()=>t.className='toast',3000); }
+
+// ── GEMINI KEY MANAGEMENT ────────────────────────────────
+function showGeminiKeyInput() {
+  document.getElementById('geminiKeyBanner').style.display = 'block';
+  document.getElementById('geminiKeyInput').focus();
+  showToast('Enter your Gemini API key to scan receipts');
+}
+
+function saveGeminiKey() {
+  const key = document.getElementById('geminiKeyInput').value.trim();
+  if (!key || !key.startsWith('AIza')) { showToast('Invalid key — should start with AIza'); return; }
+  GEMINI_API_KEY = key;
+  localStorage.setItem('str_gemini_key', key);
+  document.getElementById('geminiKeyBanner').style.display = 'none';
+  document.getElementById('geminiKeyInput').value = '';
+  showToast('Gemini key saved — upload your receipt again');
+}
 
 // ── INIT ──────────────────────────────────────────────────
 document.getElementById('expDate').valueAsDate = new Date();
