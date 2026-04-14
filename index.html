@@ -686,39 +686,57 @@ function regexParser(ocrText) {
   // A captured "name" that is itself a price string (e.g. "$4.69" or "4.69") is not a real item name
   const isPriceLike = (s) => /^\$?[\d,]+\.\d{2}$/.test(s.trim());
 
-  // Walmart two-pass parser
-  // Pass 1 — inline: "Name   Shopped/Weight-adjusted/Substitutions Qty N   $price" (all on one line)
-  const walmartSeen = new Set(); // tracks "name|price" pairs to avoid duplicates across passes
-  const walmartInlineRe = /^(.+?)\s+(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+\d+\s+\$([\d,]+\.\d{2})/gim;
-  let wm;
-  while ((wm = walmartInlineRe.exec(ocrText)) !== null) {
-    const name = wm[1].trim(), price = parseFloat(wm[2].replace(/,/g,''));
-    const key = name + '|' + price.toFixed(2);
-    if (!isPriceLike(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && !SKIP.test(name) && !walmartSeen.has(key)) {
-      items.push({name, price});
-      walmartSeen.add(key);
-    }
-  }
-
-  // Pass 2 — split-line: Vision OCR puts the status keyword on its own line (common for Weight-adjusted).
-  // Match "Weight-adjusted|Shopped|Substitutions Qty N $price" as a standalone line,
-  // then take the preceding non-empty line as the item name.
+  // Walmart ordered-pairing parser
+  // Vision OCR reads this PDF in column order: a block of product names, then the
+  // matching status+price pairs for those names — price on its own line after status.
+  // e.g. "Shopped Qty 1\n$8.74" or "Weight-adjusted Qty 3.\n$4.69"
+  // Strategy: collect names in OCR order, collect prices in OCR order, zip them 1-to-1.
   if (/walmart/i.test(ocrText)) {
-    const walmartLines = ocrText.split('\n').map(l => l.trim());
-    for (let i = 1; i < walmartLines.length; i++) {
-      const sm = walmartLines[i].match(/^(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+\d+\s+\$([\d,]+\.\d{2})$/i);
-      if (!sm) continue;
-      const price = parseFloat(sm[1].replace(/,/g,''));
-      if (price <= 0 || summaryAmounts.has(price.toFixed(2))) continue;
-      // Walk back to find the nearest non-empty, non-status preceding line as the name
-      let name = '';
-      for (let j = i - 1; j >= 0 && !name; j--) {
-        const l = walmartLines[j];
-        if (l && !isPriceLike(l) && !SKIP.test(l) && !/^(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty/i.test(l))
-          name = l;
+    const wLines = ocrText.split('\n').map(l => l.trim());
+
+    // Step 1: extract prices — each status line is immediately followed by a "$X.XX" line
+    const wPrices = [];
+    for (let i = 0; i < wLines.length - 1; i++) {
+      if (/^(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+[\d.]+\.?$/i.test(wLines[i]) &&
+          /^\$([\d,]+\.\d{2})$/.test(wLines[i + 1])) {
+        wPrices.push(parseFloat(wLines[i + 1].replace('$', '').replace(/,/g, '')));
+        i++; // skip the price line so it isn't re-processed
       }
+    }
+
+    // Step 2: collect product name lines — exclude all non-name lines
+    const isNotWalmartName = (l) =>
+      !l || l.length < 3 ||
+      /^walmart$/i.test(l) ||
+      /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d/i.test(l) ||
+      /^order#/i.test(l) ||
+      /^(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty/i.test(l) ||
+      /^-?\$[\d,]+\.\d{2}$/.test(l) ||
+      /^[\d,]+\.\d{2}$/.test(l) ||
+      /^(subtotal|savings|free delivery|3 hours|tax|total|temporary|payment|driver|tip|this covers|if needed)/i.test(l);
+
+    const wNames = wLines.filter(l => !isNotWalmartName(l));
+
+    // Step 3: zip names[i] ↔ prices[i]
+    const wCount = Math.min(wNames.length, wPrices.length);
+    console.log('Walmart parser — names:', wNames.length, 'prices:', wPrices.length, 'pairing:', wCount);
+    for (let i = 0; i < wCount; i++) {
+      const name = wNames[i], price = wPrices[i];
+      if (price > 0 && !summaryAmounts.has(price.toFixed(2)))
+        items.push({name, price});
+    }
+  } else {
+    // Non-Walmart: inline "Name  Shopped/Weight-adjusted Qty N  $price" on one line
+    const walmartSeen = new Set();
+    const walmartInlineRe = /^(.+?)\s+(?:Shopped|Weight-adjusted|Substitutions?)\s+Qty\s+\d+\s+\$([\d,]+\.\d{2})/gim;
+    let wm;
+    while ((wm = walmartInlineRe.exec(ocrText)) !== null) {
+      const name = wm[1].trim(), price = parseFloat(wm[2].replace(/,/g,''));
       const key = name + '|' + price.toFixed(2);
-      if (name && !walmartSeen.has(key)) { items.push({name, price}); walmartSeen.add(key); }
+      if (!isPriceLike(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && !SKIP.test(name) && !walmartSeen.has(key)) {
+        items.push({name, price});
+        walmartSeen.add(key);
+      }
     }
   }
 
