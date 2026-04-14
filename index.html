@@ -725,6 +725,31 @@ function regexParser(ocrText) {
       if (price > 0 && !summaryAmounts.has(price.toFixed(2)))
         items.push({name, price});
     }
+
+    // Step 4: extract subtotal, savings, and tax from the summary section.
+    // Vision may read these inline ("Tax $1.74") or column-separated ("Tax\n...\n$1.74").
+    // We search flexibly: find the label, then find the next dollar amount after it.
+    const wSummaryFind = (label) => {
+      const idx = ocrText.search(new RegExp(label, 'i'));
+      if (idx === -1) return null;
+      const after = ocrText.substring(idx + label.length);
+      const m = after.match(/\$?([\d,]+\.\d{2})/);
+      return m ? parseFloat(m[1].replace(/,/g, '')) : null;
+    };
+
+    // Use the after-savings subtotal ("$121.41" net line) as our tax base where possible.
+    // Walmart shows: Subtotal → Savings → [net]. The net is the correct merchandise base.
+    const wSubtotalRaw = wSummaryFind('Subtotal');      // $124.67 (before savings)
+    const wSavings     = wSummaryFind('Savings');        // $3.26
+    const wTax         = wSummaryFind('\\bTax\\b');      // $1.74 (use \b to avoid matching "Subtotal")
+    const wSubtotalNet = (wSubtotalRaw && wSavings) ? Math.round((wSubtotalRaw - wSavings) * 100) / 100 : wSubtotalRaw;
+
+    if (wSubtotalNet && wTax) {
+      // Override the top-level subtotal/tax so recalcTax() works correctly
+      subtotal = wSubtotalNet;
+      tax = wTax;
+      console.log('Walmart summary — subtotal (after savings):', subtotal, 'tax:', tax, 'savings:', wSavings);
+    }
   } else {
     // Non-Walmart: inline "Name  Shopped/Weight-adjusted Qty N  $price" on one line
     const walmartSeen = new Set();
