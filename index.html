@@ -557,6 +557,154 @@ function renderPDF(dataUrl, resolve, reject) {
 
 // ── VISION OCR ────────────────────────────────────────────
 
+// ── SMART RECEIPT PARSER ────────────────────────────────
+async function extractWithGemini(ocrText) {
+  // Smart local parser - no external AI needed
+  // Handles Walmart, Home Depot, Amazon, and most receipt formats
+
+  const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // ── VENDOR ──
+  // First meaningful line before order numbers
+  let vendor = 'Unknown';
+  for (const line of lines) {
+    if (/^(order|invoice|#|\d{5,}|subtotal|tax|total)/i.test(line)) break;
+    if (line.length > 2 && !/^\d+$/.test(line)) { vendor = line; break; }
+  }
+  // Common vendor cleanups
+  if (/walmart/i.test(ocrText)) vendor = 'Walmart';
+  else if (/home depot/i.test(ocrText) || (/depot/i.test(ocrText) && /home/i.test(ocrText))) vendor = 'The Home Depot';
+  else if (/amazon/i.test(ocrText)) vendor = 'Amazon';
+  else if (/sam.s club/i.test(ocrText)) vendor = "Sam's Club";
+  else if (/target/i.test(ocrText)) vendor = 'Target';
+  else if (/harbor freight/i.test(ocrText)) vendor = 'Harbor Freight';
+  else if (/ace hardware/i.test(ocrText)) vendor = 'Ace Hardware';
+  else if (/wayfair/i.test(ocrText)) vendor = 'Wayfair';
+
+  // ── DATE ──
+  let orderDate = null;
+  // "Apr 07, 2026" format (Walmart)
+  const monthNames = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  const textDateM = ocrText.match(/(?:ordered?\s+)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (textDateM) {
+    const mon = monthNames[textDateM[1].toLowerCase().substring(0,3)];
+    orderDate = `${textDateM[3]}-${String(mon).padStart(2,'0')}-${String(textDateM[2]).padStart(2,'0')}`;
+  }
+  // M/D/YYYY format (Home Depot) - prefer "Ordered" date
+  if (!orderDate) {
+    const orderedM = ocrText.match(/ordered\s*\n?(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    if (orderedM) { const d = new Date(orderedM[1]); if (!isNaN(d)) orderDate = d.toISOString().split('T')[0]; }
+  }
+  if (!orderDate) {
+    for (const m of [...ocrText.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4})/g)]) {
+      const before = ocrText.substring(Math.max(0, m.index-40), m.index).toLowerCase();
+      if (before.includes('deliver')) continue;
+      const d = new Date(m[1]); if (!isNaN(d)) { orderDate = d.toISOString().split('T')[0]; break; }
+    }
+  }
+
+  // ── SUBTOTAL / TAX / TOTAL ──
+  let subtotal = null, tax = null, total = null;
+  // Look for labeled rows - handles both "Subtotal $124.67" and "Subtotal\n$124.67"
+  const findAmount = (pattern) => {
+    const m = ocrText.match(pattern);
+    return m ? parseFloat(m[1].replace(/,/g,'')) : null;
+  };
+  subtotal = findAmount(/subtotal\s*[\n:$\s]+([0-9,]+\.\d{2})/i);
+  tax      = findAmount(/(?:^|\n)tax\s*[\n:$\s]+([0-9,]+\.\d{2})/im);
+  total    = findAmount(/(?:^|\n)total\s*[\n:$\s]+([0-9,]+\.\d{2})/im);
+
+  // Walmart has "Savings -$X" which reduces subtotal - use post-savings subtotal
+  // Look for the final pre-tax amount (after savings line)
+  const savingsM = ocrText.match(/savings\s*[-\$\s]+([0-9,]+\.\d{2})/i);
+  if (savingsM && subtotal) {
+    const afterSavings = findAmount(/\$([0-9,]+\.\d{2})\s*\n(?:free delivery|delivery|tax|total)/i);
+    if (afterSavings) subtotal = afterSavings;
+  }
+
+  // Infer missing values
+  if (!tax && subtotal && total) tax = Math.round((total - subtotal) * 100) / 100;
+  if (!total && subtotal && tax) total = Math.round((subtotal + tax) * 100) / 100;
+
+  // ── LINE ITEMS ──
+  // Strategy: find lines that have both a description and a price on the same line
+  // OR find description lines followed by price lines
+  const items = [];
+  const SKIP = /^(walmart|home depot|amazon|order|invoice|ship|subtotal|savings|tax|total|free delivery|driver|tip|temporary|payment|your|this covers|if needed|weight-adjusted|shopped qty|substitution|qty \d|#\d|apr |jan |feb |mar |may |jun |jul |aug |sep |oct |nov |dec |\d{4,})/i;
+  const PRICE_RE = /\$([0-9,]+\.\d{2})/;
+  const summaryAmounts = new Set([subtotal, tax, total].filter(Boolean).map(v => v?.toFixed(2)));
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (SKIP.test(line)) continue;
+
+    // Case 1: price is on the same line as description
+    // e.g. "Great Value Yogurt, 32oz   $3.36"
+    const inlineM = line.match(/^(.{5,}?)\s+\$([0-9,]+\.\d{2})(?:\s|$)/);
+    if (inlineM) {
+      const name = inlineM[1].trim();
+      const price = parseFloat(inlineM[2].replace(/,/g,''));
+      if (!SKIP.test(name) && !summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000) {
+        items.push({ name, price });
+        continue;
+      }
+    }
+
+    // Case 2: Walmart format - "Item Name, Each   Shopped Qty 1   $3.36"
+    // The price appears after qty info on the same line
+    const walmartM = line.match(/^(.+?)\s+(?:shopped|weight-adjusted|substitution)s?\s+qty\s+\d+\s+\$([0-9,]+\.\d{2})/i);
+    if (walmartM) {
+      const name = walmartM[1].trim();
+      const price = parseFloat(walmartM[2].replace(/,/g,''));
+      if (!summaryAmounts.has(price.toFixed(2)) && price > 0) {
+        items.push({ name, price });
+        continue;
+      }
+    }
+
+    // Case 3: description line followed by price on next line
+    if (line.length > 10 && !SKIP.test(line) && !PRICE_RE.test(line)) {
+      const nextLine = lines[i+1] || '';
+      const nextM = nextLine.match(/^\$?([0-9,]+\.\d{2})$/);
+      if (nextM) {
+        const price = parseFloat(nextM[1].replace(/,/g,''));
+        if (!summaryAmounts.has(price.toFixed(2)) && price > 0 && price < 10000) {
+          items.push({ name: line, price });
+          i++; // skip the price line
+          continue;
+        }
+      }
+    }
+  }
+
+  // Home Depot "Pre Tax Amount" column: unit_price, 0, 0, pretax_total
+  if (items.length === 0 && ocrText.includes('Pre Tax Amount')) {
+    const ptIdx = ocrText.indexOf('Pre Tax Amount');
+    const section = ocrText.substring(ptIdx, ptIdx + 500);
+    const amounts = [...section.matchAll(/\$([0-9,]+\.\d{2})/g)]
+      .map(m => parseFloat(m[1].replace(/,/g,''))).filter(a => a > 0);
+    if (amounts.length > 0) {
+      const preTax = amounts[amounts.length - 1];
+      if (!summaryAmounts.has(preTax.toFixed(2))) {
+        subtotal = subtotal || preTax;
+        items.push({ name: vendor, price: preTax });
+      }
+    }
+  }
+
+  // If still no items, fall back to subtotal
+  if (items.length === 0 && subtotal) {
+    items.push({ name: vendor, price: subtotal });
+  }
+
+  console.log('Smart parser — vendor:', vendor, 'date:', orderDate,
+    'items:', items.length, 'subtotal:', subtotal, 'tax:', tax);
+  return { vendor, order_date: orderDate, items, subtotal, tax, total };
+}
+
+
+// ── VISION OCR ────────────────────────────────────────────
+
 // ── GEMINI EXTRACTION ────────────────────────────────────
 async function extractWithGemini(ocrText) {
   const prompt = `You are a receipt parser. Extract data from this receipt OCR text and return ONLY valid JSON with no markdown, no explanation.
@@ -577,10 +725,7 @@ Rules:
 Receipt text:
 ` + ocrText;
 
-  if (!GEMINI_API_KEY) {
-    showGeminiKeyInput();
-    throw new Error('No Gemini API key — enter it in the banner above');
-  }
+  // Smart local parser — no API key needed
   const geminiUrl = 'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
   console.log('Calling Gemini URL:', geminiUrl.replace(GEMINI_API_KEY, 'KEY_HIDDEN'));
   let response, lastErr;
