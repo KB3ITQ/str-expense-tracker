@@ -581,7 +581,7 @@ Receipt text:
     showGeminiKeyInput();
     throw new Error('No Gemini API key — enter it in the banner above');
   }
-  const geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=' + GEMINI_API_KEY;
+  const geminiUrl = 'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
   console.log('Calling Gemini URL:', geminiUrl.replace(GEMINI_API_KEY, 'KEY_HIDDEN'));
   let response, lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
