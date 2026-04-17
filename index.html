@@ -133,7 +133,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .btn:disabled{opacity:.5;cursor:not-allowed}
 
 /* ── LINE ITEMS ── */
-.li-row{display:grid;grid-template-columns:20px 1fr 110px 26px;gap:7px;margin-bottom:7px;align-items:center}
+.li-row{display:grid;grid-template-columns:16px 88px 150px 1fr 90px 22px;gap:6px;margin-bottom:6px;align-items:center}
 .li-remove{background:none;border:none;cursor:pointer;color:var(--text-light);font-size:16px;padding:0;line-height:1;transition:color .15s;text-align:center}
 .li-remove:hover{color:var(--red)}
 .li-total{text-align:right;font-size:11px;color:var(--text-mid);padding-top:6px;border-top:1px solid var(--border-lt);margin-top:4px}
@@ -355,8 +355,15 @@ const DEFAULT_RECS = [
   {id:'rec_jim',       vendor:'Jim OConnor',   amount:1406.59,  day:3,  property:'pearl', category:'Mortgage interest'},
 ];
 
-const PROP_LABEL = {pearl:'Pearl in the Pines', jays:"Jay's Retreat", both:'Both (50/50)'};
-const PROP_SHORT = {pearl:'Pearl', jays:"Jay's", both:'Both'};
+const PROP_LABEL = {pearl:'Pearl in the Pines', jays:"Jay's Retreat", both:'Both (50/50)', mixed:'Mixed'};
+const PROP_SHORT = {pearl:'Pearl', jays:"Jay's", both:'Both', mixed:'Mixed'};
+
+const RECEIPT_EXEMPT = ['anec','t-mobile','tmobile','pricelabs','jim oconnor',"jim o'connor"];
+function requiresReceipt(vendor){
+  if(!vendor)return false;
+  const vl=vendor.toLowerCase().trim();
+  return !RECEIPT_EXEMPT.some(e=>vl.includes(e));
+}
 
 // SVG icons
 const IC = {
@@ -400,15 +407,12 @@ const S = {
 
 // Add form state (persists across navigation)
 const AF = {
-  property: 'pearl',
-  useLineItems: false,
-  lineItems: [{desc:'', amt:'', inReport:true}],
+  lineItems: [{property:'pearl', category:'', desc:'', amt:'', inReport:true}],
   receiptFile: null,
   receiptDriveId: null,
   receiptDriveName: null,
   receiptDriveLink: null,
-  // persisted field values
-  date: '', vendor:'', cat:'', amount:'', notes:'', inReport: true,
+  date: '', vendor:'', notes:'',
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -734,42 +738,29 @@ function renderView(v){
 function captureAddForm(){
   AF.date   = document.getElementById('f-date')  ?.value ?? AF.date;
   AF.vendor = document.getElementById('f-vendor')?.value ?? AF.vendor;
-  AF.cat    = document.getElementById('f-cat')   ?.value ?? AF.cat;
-  AF.amount = document.getElementById('f-amount')?.value ?? AF.amount;
   AF.notes  = document.getElementById('f-notes') ?.value ?? AF.notes;
-  AF.inReport = document.getElementById('f-inreport')?.checked ?? AF.inReport;
-  if(AF.useLineItems){
-    document.querySelectorAll('.li-row').forEach((row,i)=>{
-      const ins=row.querySelectorAll('input[type=text],input[type=number]');
-      const cb=row.querySelector('input[type=checkbox]');
-      if(AF.lineItems[i]){
-        AF.lineItems[i].desc=ins[0]?.value||'';
-        AF.lineItems[i].amt=ins[1]?.value||'';
-        AF.lineItems[i].inReport=cb?cb.checked:true;
-      }
-    });
-  }
-  if(AF.useLineItems){
-    document.querySelectorAll('.li-row').forEach((row,i)=>{
-      const ins=row.querySelectorAll('input');
-      if(AF.lineItems[i]){AF.lineItems[i].desc=ins[0]?.value||'';AF.lineItems[i].amt=ins[1]?.value||'';}
-    });
-  }
+  // sync line items from DOM
+  document.querySelectorAll('.li-row').forEach((row,i)=>{
+    if(!AF.lineItems[i])return;
+    const prop=row.querySelector('.li-prop')?.value||'pearl';
+    const cat=row.querySelector('.li-cat')?.value||'';
+    const desc=row.querySelector('.li-desc')?.value||'';
+    const amt=row.querySelector('.li-amt')?.value||'';
+    const rpt=row.querySelector('.li-rpt')?.checked??true;
+    AF.lineItems[i]={property:prop,category:cat,desc,amt,inReport:rpt};
+  });
 }
 
 function buildAddView(){
-  const cats=getCats(AF.property);
-  const propBtns=['pearl','jays','both'].map(p=>`
-    <button class="prop-btn ${AF.property===p?'sel-'+p:''}" data-prop="${p}" onclick="selectProp('${p}')">${PROP_SHORT[p]}</button>
-  `).join('');
-  const catOpts=`<option value="">— select —</option>`+cats.map(c=>`<option value="${c}"${c===AF.cat?' selected':''}>${c}</option>`).join('');
-  const liHTML=AF.useLineItems?renderLISection():'';
   const receiptHTML=renderReceiptSection();
+  const vendor=AF.vendor||'';
+  const hasReceipt=!!(AF.receiptFile||AF.receiptDriveId);
+  const recReq=requiresReceipt(vendor)&&!hasReceipt;
 
   return`
   <div class="page-header"><h2>Add Expense</h2></div>
   <div class="page-content">
-  <div class="card" style="max-width:680px">
+  <div class="card" style="max-width:820px">
     <div class="form-row four">
       <div class="form-group">
         <label>Date</label>
@@ -778,47 +769,33 @@ function buildAddView(){
       <div class="form-group" style="grid-column:span 3">
         <label>Vendor / Payee</label>
         <div class="ac-wrap">
-          <input type="text" id="f-vendor" value="${esc(AF.vendor)}" placeholder="e.g. Amazon, T-Mobile, Marcela Castro…" autocomplete="off"
-            oninput="onVendorInput(this.value)" onblur="setTimeout(closeAC,200)">
+          <input type="text" id="f-vendor" value="${esc(AF.vendor)}"
+            placeholder="e.g. Amazon, T-Mobile, Marcela Castro…" autocomplete="off"
+            oninput="onVendorInput(this.value);updateSaveBtn(this.value)" onblur="setTimeout(closeAC,200)">
           <div class="ac-list" id="vendor-ac" style="display:none"></div>
         </div>
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Property</label>
-        <div class="prop-btns" id="prop-btns">${propBtns}</div>
-      </div>
-      <div class="form-group">
-        <label>Category</label>
-        <select id="f-cat">${catOpts}</select>
-      </div>
-    </div>
-    <div id="amount-row" class="form-row" style="${AF.useLineItems?'display:none':''}">
-      <div class="form-group">
-        <label>Amount ($)</label>
-        <input type="number" id="f-amount" value="${AF.amount}" placeholder="0.00" step="0.01" min="0">
-      </div>
-      <div class="form-group" style="justify-content:flex-end;padding-top:21px">
-        <button class="add-link" onclick="toggleLI(true)">+ use line items</button>
-      </div>
-    </div>
-    <div id="li-wrap">${liHTML}</div>
+
+    <!-- Line Items -->
+    <div id="li-wrap">${renderLISection()}</div>
+
     <div class="form-row full" style="margin-top:4px">
       <div class="form-group">
         <label>Notes (optional)</label>
         <textarea id="f-notes" rows="2">${esc(AF.notes)}</textarea>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;margin-bottom:4px">
-      <input type="checkbox" id="f-inreport" ${AF.inReport!==false?'checked':''} style="width:15px;height:15px;accent-color:var(--green-dark);cursor:pointer;flex-shrink:0">
-      <label for="f-inreport" style="font-size:12px;font-weight:500;color:var(--text-mid);cursor:pointer;text-transform:none;letter-spacing:.01em">Include in monthly report</label>
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
       <div id="receipt-area">${receiptHTML}</div>
-      <div style="display:flex;gap:8px;margin-left:auto">
-        <button class="btn btn-secondary" onclick="resetAddForm()">Clear</button>
-        <button class="btn btn-primary" onclick="submitAdd()">${icon('add')} Save Expense</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto">
+        ${recReq?`<span id="save-msg" style="font-size:11px;color:var(--amber);font-style:italic">Receipt required for ${esc(vendor)||'this vendor'}</span>`:'<span id="save-msg"></span>'}
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary" onclick="resetAddForm()">Clear</button>
+          <button class="btn btn-primary" id="save-btn" onclick="submitAdd()" ${recReq?'disabled style="opacity:.45;cursor:not-allowed"':''}>
+            ${icon('add')} Save Expense
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -826,29 +803,42 @@ function buildAddView(){
 }
 
 function renderLISection(){
+  const propOpts=p=>['pearl','jays','both'].map(v=>`<option value="${v}"${v===p?' selected':''}>${PROP_SHORT[v]}</option>`).join('');
+  const catOpts=(p,cat)=>`<option value="">— cat —</option>`+getCats(p).map(c=>`<option value="${c}"${c===cat?' selected':''}>${c}</option>`).join('');
+
+  const header=`<div style="display:grid;grid-template-columns:16px 88px 150px 1fr 90px 22px;gap:6px;padding:0 0 5px;border-bottom:1px solid var(--border-lt);margin-bottom:4px">
+    <span title="Include in report" style="font-size:9px;color:var(--text-light);text-align:center;padding-top:2px">RPT</span>
+    <span style="font-size:9px;color:var(--text-light);letter-spacing:.06em;text-transform:uppercase">Property</span>
+    <span style="font-size:9px;color:var(--text-light);letter-spacing:.06em;text-transform:uppercase">Category</span>
+    <span style="font-size:9px;color:var(--text-light);letter-spacing:.06em;text-transform:uppercase">Description</span>
+    <span style="font-size:9px;color:var(--text-light);letter-spacing:.06em;text-transform:uppercase">Amount</span>
+    <span></span>
+  </div>`;
+
   const rows=AF.lineItems.map((li,i)=>`
     <div class="li-row">
-      <input type="checkbox" title="Include in report" ${li.inReport!==false?'checked':''} onchange="liUpdate(${i},'inReport',this.checked)" style="width:14px;height:14px;accent-color:var(--green-dark);cursor:pointer;margin-top:1px">
-      <input type="text" placeholder="Description" value="${esc(li.desc)}" oninput="liUpdate(${i},'desc',this.value)">
-      <input type="number" placeholder="0.00" step="0.01" value="${li.amt}" oninput="liUpdate(${i},'amt',this.value)">
-      <button class="li-remove" onclick="liRemove(${i})" title="Remove">×</button>
+      <input type="checkbox" class="li-rpt" title="Include in report" ${li.inReport!==false?'checked':''}
+        style="width:14px;height:14px;accent-color:var(--green-dark);cursor:pointer;margin-top:1px"
+        onchange="liUpdate(${i},'inReport',this.checked)">
+      <select class="li-prop" onchange="liPropChange(${i},this.value)" style="padding:7px 4px;font-size:12px">
+        ${propOpts(li.property||'pearl')}
+      </select>
+      <select class="li-cat" style="padding:7px 4px;font-size:12px">
+        ${catOpts(li.property||'pearl',li.category)}
+      </select>
+      <input type="text" class="li-desc" placeholder="Description (optional)" value="${esc(li.desc)}"
+        oninput="liUpdate(${i},'desc',this.value)">
+      <input type="number" class="li-amt" placeholder="0.00" step="0.01" min="0" value="${li.amt}"
+        oninput="liUpdate(${i},'amt',this.value)">
+      <button class="li-remove" onclick="liRemove(${i})" title="Remove line">×</button>
+    </div>`).join('');
+
+  return`<div id="li-section" style="margin-bottom:10px">
+    ${header}${rows}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <button class="add-link" onclick="liAdd()">+ add line</button>
+      <div class="li-total">Total: <strong>${fmt$(liTotal())}</strong>${liReportTotal()<liTotal()?` &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong>`:''}</div>
     </div>
-  `).join('');
-  return`
-  <div id="li-section" style="margin-bottom:12px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-      <label>Line Items</label>
-      <button class="add-link" onclick="toggleLI(false)">← use single amount</button>
-    </div>
-    <div style="display:grid;grid-template-columns:20px 1fr 110px 26px;gap:7px;margin-bottom:4px;padding:0 0 4px;border-bottom:1px solid var(--border-lt)">
-      <span title="Include in report" style="font-size:9px;text-align:center;color:var(--text-light);letter-spacing:.04em;padding-top:1px">RPT</span>
-      <span style="font-size:9px;color:var(--text-light);letter-spacing:.04em;text-transform:uppercase">Description</span>
-      <span style="font-size:9px;color:var(--text-light);letter-spacing:.04em;text-transform:uppercase">Amount</span>
-      <span></span>
-    </div>
-    ${rows}
-    <button class="add-link" onclick="liAdd()" style="margin-top:4px">+ add line</button>
-    <div class="li-total">Total: <strong>${fmt$(liTotal())}</strong> &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong></div>
   </div>`;
 }
 
@@ -868,27 +858,55 @@ function renderReceiptSection(){
     <input type="file" id="f-receipt" accept="image/*,.pdf" style="display:none" onchange="onReceiptSelect(this)">`;
 }
 
-function bindAddView(){
-  // nothing extra needed – all event handlers are inline
+function bindAddView(){}
+
+function updateSaveBtn(vendor){
+  const hasReceipt=!!(AF.receiptFile||AF.receiptDriveId);
+  const recReq=requiresReceipt(vendor)&&!hasReceipt;
+  const btn=document.getElementById('save-btn');
+  const msg=document.getElementById('save-msg');
+  if(btn){btn.disabled=recReq;btn.style.opacity=recReq?'.45':'';btn.style.cursor=recReq?'not-allowed':'';}
+  if(msg){msg.textContent=recReq?`Receipt required for ${vendor||'this vendor'}`:'';
+          msg.style.color='var(--amber)';msg.style.fontSize='11px';msg.style.fontStyle='italic';}
 }
 
-function selectProp(p){
-  AF.property=p;
-  // Update prop buttons
-  document.querySelectorAll('.prop-btn').forEach(btn=>{
-    btn.className='prop-btn'+(btn.dataset.prop===p?' sel-'+p:'');
-  });
-  // Rebuild category select
-  const cats=getCats(p);
-  const prev=document.getElementById('f-cat')?.value||AF.cat;
-  const vendor=document.getElementById('f-vendor')?.value||AF.vendor;
-  const sel=document.getElementById('f-cat');
+function liPropChange(i,prop){
+  AF.lineItems[i].property=prop;
+  // Rebuild category select for this row
+  const rows=document.querySelectorAll('.li-row');
+  const sel=rows[i]?.querySelector('.li-cat');
   if(sel){
-    sel.innerHTML=`<option value="">— select —</option>`+cats.map(c=>`<option value="${c}">${c}</option>`).join('');
-    const suggested=suggestCat(vendor,p);
-    const restore=prev&&cats.includes(prev)?prev:suggested;
-    if(restore)sel.value=restore;
-    AF.cat=sel.value;
+    const prev=sel.value;
+    const cats=getCats(prop);
+    sel.innerHTML=`<option value="">— cat —</option>`+cats.map(c=>`<option value="${c}"${c===prev?' selected':''}>${c}</option>`).join('');
+    if(!cats.includes(prev))sel.value='';
+    AF.lineItems[i].category=sel.value;
+  }
+}
+
+function liTotal(){return AF.lineItems.reduce((s,li)=>s+(parseFloat(li.amt)||0),0)}
+function liReportTotal(){return AF.lineItems.reduce((s,li)=>li.inReport!==false?s+(parseFloat(li.amt)||0):s,0)}
+function liUpdate(i,k,v){
+  if(AF.lineItems[i])AF.lineItems[i][k]=v;
+  const el=document.querySelector('.li-total');
+  if(el)el.innerHTML=`Total: <strong>${fmt$(liTotal())}</strong>${liReportTotal()<liTotal()?` &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong>`:''}`;
+}
+function liAdd(){
+  // Default new line to same property as previous line
+  const prev=AF.lineItems[AF.lineItems.length-1];
+  AF.lineItems.push({property:prev?.property||'pearl',category:'',desc:'',amt:'',inReport:true});
+  document.getElementById('li-wrap').innerHTML=renderLISection();
+}
+function liRemove(i){
+  AF.lineItems.splice(i,1);
+  if(!AF.lineItems.length)AF.lineItems=[{property:'pearl',category:'',desc:'',amt:'',inReport:true}];
+  document.getElementById('li-wrap').innerHTML=renderLISection();
+}
+function onReceiptSelect(inp){
+  if(inp.files&&inp.files[0]){
+    AF.receiptFile=inp.files[0];
+    document.getElementById('receipt-area').innerHTML=renderReceiptSection();
+    updateSaveBtn(document.getElementById('f-vendor')?.value||'');
   }
 }
 
@@ -910,81 +928,58 @@ function onVendorInput(v){
 function closeAC(){const ac=document.getElementById('vendor-ac');if(ac)ac.style.display='none';}
 function pickVendor(v){
   const el=document.getElementById('f-vendor');
-  if(el){el.value=v;onVendorInput('');}
-  const cat=suggestCat(v,AF.property);
-  if(cat){const s=document.getElementById('f-cat');if(s){s.value=cat;AF.cat=cat;}}
-}
-
-function toggleLI(on){
-  AF.useLineItems=on;
-  if(on){
-    AF.lineItems=[{desc:'',amt:''},{desc:'',amt:''}];
-    document.getElementById('amount-row').style.display='none';
-    document.getElementById('li-wrap').innerHTML=renderLISection();
-  } else {
-    document.getElementById('amount-row').style.display='';
-    document.getElementById('li-wrap').innerHTML='';
-  }
-}
-function liTotal(){return AF.lineItems.reduce((s,li)=>s+(parseFloat(li.amt)||0),0)}
-function liReportTotal(){return AF.lineItems.reduce((s,li)=>li.inReport!==false?s+(parseFloat(li.amt)||0):s,0)}
-function liUpdate(i,k,v){
-  AF.lineItems[i][k]=v;
-  const el=document.querySelector('.li-total');
-  if(el)el.innerHTML=`Total: <strong>${fmt$(liTotal())}</strong> &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong>`;
-}
-function liAdd(){
-  AF.lineItems.push({desc:'',amt:'',inReport:true});
-  document.getElementById('li-wrap').innerHTML=renderLISection();
-}
-function liRemove(i){
-  AF.lineItems.splice(i,1);
-  if(!AF.lineItems.length)AF.lineItems=[{desc:'',amt:'',inReport:true}];
-  document.getElementById('li-wrap').innerHTML=renderLISection();
-}
-function onReceiptSelect(inp){
-  if(inp.files&&inp.files[0]){
-    AF.receiptFile=inp.files[0];
-    document.getElementById('receipt-area').innerHTML=renderReceiptSection();
+  if(el){el.value=v;onVendorInput('');updateSaveBtn(v);}
+  // Auto-suggest category into first line item
+  const firstRow=document.querySelector('.li-row');
+  if(firstRow){
+    const prop=firstRow.querySelector('.li-prop')?.value||'pearl';
+    const cat=suggestCat(v,prop);
+    if(cat){const s=firstRow.querySelector('.li-cat');if(s)s.value=cat;}
   }
 }
 
 function resetAddForm(){
-  Object.assign(AF,{property:'pearl',useLineItems:false,lineItems:[{desc:'',amt:'',inReport:true}],receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,date:today(),vendor:'',cat:'',amount:'',notes:'',inReport:true});
+  Object.assign(AF,{lineItems:[{property:'pearl',category:'',desc:'',amt:'',inReport:true}],
+    receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,
+    date:today(),vendor:'',notes:''});
   renderView('add');
 }
 
 async function submitAdd(){
   const date  =document.getElementById('f-date')  ?.value||'';
   const vendor=document.getElementById('f-vendor')?.value?.trim()||'';
-  const cat   =document.getElementById('f-cat')   ?.value||'';
   const notes =document.getElementById('f-notes') ?.value?.trim()||'';
 
-  let amount,lineItems=[];
-  if(AF.useLineItems){
-    // sync from DOM
-    document.querySelectorAll('.li-row').forEach((row,i)=>{
-      const ins=row.querySelectorAll('input[type=text],input[type=number]');
-      const cb=row.querySelector('input[type=checkbox]');
-      const desc=ins[0]?.value?.trim()||'';const amt=parseFloat(ins[1]?.value)||0;
-      const inRpt=cb?cb.checked:true;
-      if(desc||amt)lineItems.push({desc,amount:amt,inReport:inRpt});
-      if(AF.lineItems[i]){AF.lineItems[i].desc=desc;AF.lineItems[i].amt=String(amt||'');AF.lineItems[i].inReport=inRpt;}
-    });
-    amount=lineItems.reduce((s,l)=>s+l.amount,0);
-  } else {
-    amount=parseFloat(document.getElementById('f-amount')?.value)||0;
-  }
+  // Read line items from DOM
+  const lineItems=[];
+  document.querySelectorAll('.li-row').forEach((row,i)=>{
+    const property=row.querySelector('.li-prop')?.value||'pearl';
+    const category=row.querySelector('.li-cat')?.value||'';
+    const desc=row.querySelector('.li-desc')?.value?.trim()||'';
+    const amount=parseFloat(row.querySelector('.li-amt')?.value)||0;
+    const inReport=row.querySelector('.li-rpt')?.checked??true;
+    if(amount>0||desc)lineItems.push({property,category,desc,amount,inReport});
+    if(AF.lineItems[i])Object.assign(AF.lineItems[i],{property,category,desc,amt:String(amount||''),inReport});
+  });
+
+  const totalAmount=lineItems.reduce((s,li)=>s+li.amount,0);
+  const hasReceipt=!!(AF.receiptDriveId||AF.receiptFile);
 
   if(!date)  return toast('Date is required',true);
   if(!vendor)return toast('Vendor is required',true);
-  if(!cat)   return toast('Category is required',true);
-  if(amount<=0)return toast('Amount must be greater than $0',true);
+  if(!lineItems.length||totalAmount<=0)return toast('At least one line item with an amount is required',true);
+  if(lineItems.some(li=>!li.category))return toast('Please select a category for each line item',true);
+  if(requiresReceipt(vendor)&&!hasReceipt)return toast('A receipt is required for '+vendor,true);
 
-  const inReport=document.getElementById('f-inreport')?.checked ?? true;
-  const entry={id:uid(),date,vendor,property:AF.property,category:cat,amount,notes,lineItems,inReport,receiptId:null,receiptName:null,receiptLink:null,createdAt:Date.now()};
+  // Derive top-level property/category from line items
+  const props=[...new Set(lineItems.map(li=>li.property))];
+  const topProp=props.length===1?props[0]:'mixed';
+  const topCat=props.length===1&&[...new Set(lineItems.map(li=>li.category))].length===1?lineItems[0].category:'mixed';
 
-  // Receipt upload
+  const entry={id:uid(),date,vendor,property:topProp,category:topCat,
+    amount:totalAmount,notes,lineItems,inReport:lineItems.some(li=>li.inReport!==false),
+    receiptId:null,receiptName:null,receiptLink:null,createdAt:Date.now()};
+
   if(AF.receiptDriveId){
     entry.receiptId=AF.receiptDriveId;entry.receiptName=AF.receiptDriveName;entry.receiptLink=AF.receiptDriveLink;
   } else if(AF.receiptFile){
@@ -992,7 +987,7 @@ async function submitAdd(){
     else{
       const ext=AF.receiptFile.name.split('.').pop().toLowerCase();
       const safe=vendor.replace(/[^a-zA-Z0-9]/g,'_').replace(/_+/g,'_').slice(0,40);
-      const fname=`${date}_${safe}_${amount.toFixed(2).replace('.','_')}.${ext}`;
+      const fname=`${date}_${safe}_${totalAmount.toFixed(2).replace('.','_')}.${ext}`;
       toast('Uploading receipt…');
       const res=await driveUpload(AF.receiptFile,fname);
       if(res){entry.receiptId=res.id;entry.receiptName=res.name;entry.receiptLink=res.webViewLink;}
@@ -1273,10 +1268,7 @@ function buildSummary(){
   const pearlT={},jaysT={};
   S.entries.forEach(e=>{
     if(!e.date?.startsWith('2026'))return;
-    const a=e.amount,c=e.category;
-    if(e.property==='pearl')      {pearlT[pearlCat(c)]=(pearlT[pearlCat(c)]||0)+a;}
-    else if(e.property==='jays')  {jaysT[jaysCat(c)]=(jaysT[jaysCat(c)]||0)+a;}
-    else if(e.property==='both')  {pearlT[pearlCat(c)]=(pearlT[pearlCat(c)]||0)+a/2;jaysT[jaysCat(c)]=(jaysT[jaysCat(c)]||0)+a/2;}
+    accumEntry(e,pearlT,jaysT,false);
   });
   const pTotal=Object.values(pearlT).reduce((s,v)=>s+v,0);
   const jTotal=Object.values(jaysT).reduce((s,v)=>s+v,0);
@@ -1337,6 +1329,28 @@ function entryReportAmt(e){
   return e.inReport!==false?e.amount:0;
 }
 
+// Accumulates an entry's amounts into pearlAcc/jaysAcc dicts, respecting per-line-item property/category
+function accumEntry(e, pearlAcc, jaysAcc, reportOnly=false){
+  if(e.lineItems&&e.lineItems.length){
+    e.lineItems.forEach(li=>{
+      if(reportOnly&&li.inReport===false)return;
+      const a=li.amount||0;if(!a)return;
+      const c=li.category||e.category||'Other';
+      const p=li.property||e.property||'pearl';
+      if(p==='pearl')     {pearlAcc[pearlCat(c)]=(pearlAcc[pearlCat(c)]||0)+a;}
+      else if(p==='jays') {jaysAcc[jaysCat(c)]=(jaysAcc[jaysCat(c)]||0)+a;}
+      else if(p==='both') {pearlAcc[pearlCat(c)]=(pearlAcc[pearlCat(c)]||0)+a/2;jaysAcc[jaysCat(c)]=(jaysAcc[jaysCat(c)]||0)+a/2;}
+    });
+  } else {
+    const a=reportOnly?entryReportAmt(e):(e.inReport!==false?e.amount:0);if(!a)return;
+    const c=e.category||'Other';
+    if(e.property==='pearl')     {pearlAcc[pearlCat(c)]=(pearlAcc[pearlCat(c)]||0)+a;}
+    else if(e.property==='jays') {jaysAcc[jaysCat(c)]=(jaysAcc[jaysCat(c)]||0)+a;}
+    else if(e.property==='both') {pearlAcc[pearlCat(c)]=(pearlAcc[pearlCat(c)]||0)+a/2;jaysAcc[jaysCat(c)]=(jaysAcc[jaysCat(c)]||0)+a/2;}
+  }
+}
+
+
 function buildReport(){
   // Default to current month
   if(!RS.month){
@@ -1370,25 +1384,13 @@ function buildReport(){
 
   // Category breakdowns — month
   const pearlMo={},jaysMo={};
-  allMonthEntries.forEach(e=>{
-    const a=entryReportAmt(e);if(!a)return;
-    const c=e.category;
-    if(e.property==='pearl')     {pearlMo[pearlCat(c)]=(pearlMo[pearlCat(c)]||0)+a;}
-    else if(e.property==='jays') {jaysMo[jaysCat(c)]=(jaysMo[jaysCat(c)]||0)+a;}
-    else if(e.property==='both') {pearlMo[pearlCat(c)]=(pearlMo[pearlCat(c)]||0)+a/2;jaysMo[jaysCat(c)]=(jaysMo[jaysCat(c)]||0)+a/2;}
-  });
+  allMonthEntries.forEach(e=>accumEntry(e,pearlMo,jaysMo,true));
   const pearlMoTotal=Object.values(pearlMo).reduce((s,v)=>s+v,0);
   const jaysMoTotal =Object.values(jaysMo).reduce((s,v)=>s+v,0);
 
   // Category breakdowns — YTD
   const pearlYtd={},jaysYtd={};
-  allYtdEntries.forEach(e=>{
-    const a=entryReportAmt(e);if(!a)return;
-    const c=e.category;
-    if(e.property==='pearl')     {pearlYtd[pearlCat(c)]=(pearlYtd[pearlCat(c)]||0)+a;}
-    else if(e.property==='jays') {jaysYtd[jaysCat(c)]=(jaysYtd[jaysCat(c)]||0)+a;}
-    else if(e.property==='both') {pearlYtd[pearlCat(c)]=(pearlYtd[pearlCat(c)]||0)+a/2;jaysYtd[jaysCat(c)]=(jaysYtd[jaysCat(c)]||0)+a/2;}
-  });
+  allYtdEntries.forEach(e=>accumEntry(e,pearlYtd,jaysYtd,true));
   const pearlYtdTotal=Object.values(pearlYtd).reduce((s,v)=>s+v,0);
   const jaysYtdTotal =Object.values(jaysYtd).reduce((s,v)=>s+v,0);
 
@@ -1869,13 +1871,32 @@ function exportCSV(){
   const rows=[['Date','Description','Account','Expense']];
   [...S.entries].sort((a,b)=>a.date<b.date?-1:1).forEach(e=>{
     const desc=e.vendor+(e.notes?' — '+e.notes:'');
-    if(e.property==='both'){
-      rows.push([e.date, desc, 'Pearl: '+pearlCat(e.category), (e.amount/2).toFixed(2)]);
-      rows.push([e.date, desc, "Jay's: "+jaysCat(e.category),  (e.amount/2).toFixed(2)]);
-    } else if(e.property==='pearl'){
-      rows.push([e.date, desc, 'Pearl: '+e.category, e.amount.toFixed(2)]);
+    if(e.lineItems&&e.lineItems.length){
+      // New format: use per-line-item property/category
+      e.lineItems.forEach(li=>{
+        const a=li.amount||0;if(!a)return;
+        const p=li.property||e.property||'pearl';
+        const cat=li.category||e.category||'';
+        const liDesc=desc+(li.desc?' — '+li.desc:'');
+        if(p==='both'){
+          rows.push([e.date,liDesc,'Pearl: '+pearlCat(cat),(a/2).toFixed(2)]);
+          rows.push([e.date,liDesc,"Jay's: "+jaysCat(cat),(a/2).toFixed(2)]);
+        } else if(p==='pearl'){
+          rows.push([e.date,liDesc,'Pearl: '+cat,a.toFixed(2)]);
+        } else {
+          rows.push([e.date,liDesc,"Jay's: "+cat,a.toFixed(2)]);
+        }
+      });
     } else {
-      rows.push([e.date, desc, "Jay's: "+e.category, e.amount.toFixed(2)]);
+      // Legacy format
+      if(e.property==='both'){
+        rows.push([e.date,desc,'Pearl: '+pearlCat(e.category),(e.amount/2).toFixed(2)]);
+        rows.push([e.date,desc,"Jay's: "+jaysCat(e.category),(e.amount/2).toFixed(2)]);
+      } else if(e.property==='pearl'){
+        rows.push([e.date,desc,'Pearl: '+e.category,e.amount.toFixed(2)]);
+      } else {
+        rows.push([e.date,desc,"Jay's: "+e.category,e.amount.toFixed(2)]);
+      }
     }
   });
   const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
