@@ -71,14 +71,15 @@ nav{flex:1;padding:12px 0;overflow-y:auto}
 .sb-btn:hover{background:rgba(255,255,255,.18)}
 
 /* ── MAIN ── */
-#main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;min-height:0}
+#view{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
 .page-header{
   background:var(--white);border-bottom:1px solid var(--border-lt);
   padding:16px 28px;display:flex;align-items:center;justify-content:space-between;
   flex-shrink:0;min-height:58px;
 }
 .page-header h2{font-family:'Fraunces',serif;font-size:20px;font-weight:500;color:var(--green-dark);letter-spacing:.01em}
-.page-content{flex:1;overflow-y:auto;padding:24px 28px}
+.page-content{flex:1;overflow-y:auto;padding:24px 28px;min-height:0}
 
 /* ── CARD ── */
 .card{background:var(--white);border:1px solid var(--border-lt);border-radius:var(--radius);padding:22px;margin-bottom:18px;box-shadow:var(--shadow-sm)}
@@ -310,6 +311,24 @@ const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const CATS_PEARL = ['Advertising','Auto & travel','Cleaning and maintenance','Commissions and fees','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Asset','Other'];
 const CATS_JAYS  = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions and fees','Contract labor','Insurance','Legal and professional services','Management fees','Other interest','Rent or lease','Repairs and maintenance','Supplies','Taxes','Utilities','Asset','Other'];
 
+// Maps any category to its Pearl (Sch C) equivalent
+const TO_PEARL_CAT = {
+  'Auto and travel':                  'Auto & travel',
+  'Legal and professional services':  'Legal and other professional fees',
+  'Repairs and maintenance':          'Repairs',
+  'Contract labor':                   'Other',
+  'Rent or lease':                    'Other',
+};
+// Maps any category to its Jay's (Sch E) equivalent
+const TO_JAYS_CAT = {
+  'Auto & travel':                    'Auto and travel',
+  'Legal and other professional fees':'Legal and professional services',
+  'Repairs':                          'Repairs and maintenance',
+  'Mortgage interest':                'Other interest',
+};
+function pearlCat(c){return TO_PEARL_CAT[c]||c;}
+function jaysCat(c){return TO_JAYS_CAT[c]||c;}
+
 const VENDOR_RULES = [
   {match:['marcela castro'],          pearl:'Cleaning and maintenance', jays:'Contract labor'},
   {match:['santiago morente'],         pearl:'Cleaning and maintenance', jays:'Contract labor'},
@@ -368,7 +387,9 @@ const S = {
   entries: [],
   recs: [],
   accounts: [],
-  checks: {},       // in-memory only, resets on every load
+  checks: {},
+  vendorBlock: new Set(),
+  histSort: {col:'date', dir:'desc'},
   folderId: null,
   folderName: null,
   gToken: null,
@@ -422,17 +443,115 @@ function loadLS(){
     const a=JSON.parse(localStorage.getItem('str_accounts')||'null');
     S.accounts=(a&&a.length)?a:DEFAULT_ACCOUNTS.map(x=>({...x}));
   }catch{S.accounts=DEFAULT_ACCOUNTS.map(x=>({...x}))}
-  // Checks are always reset on load — purely in-memory
-  S.checks={};
+  try{S.checks=JSON.parse(localStorage.getItem('str_checks')||'{}')}catch{S.checks={}}
+  try{const b=JSON.parse(localStorage.getItem('str_vblock')||'[]');S.vendorBlock=new Set(b);}catch{S.vendorBlock=new Set();}
   S.folderId  = localStorage.getItem('str_fid')   || null;
   S.folderName= localStorage.getItem('str_fname') || null;
 }
-function saveEntries(){localStorage.setItem('str_entries_26',JSON.stringify(S.entries))}
-function saveRecs(){localStorage.setItem('str_recs',JSON.stringify(S.recs))}
-function saveAccounts(){localStorage.setItem('str_accounts',JSON.stringify(S.accounts))}
+let syncFileId = localStorage.getItem('str_sync_id')||null;
+let _syncTimer;
+let _isSyncing = false;
+
+function saveEntries(sync=true){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));if(sync)scheduleSync();}
+function saveRecs(sync=true){localStorage.setItem('str_recs',JSON.stringify(S.recs));if(sync)scheduleSync();}
+function saveAccounts(sync=true){localStorage.setItem('str_accounts',JSON.stringify(S.accounts));if(sync)scheduleSync();}
+function saveChecks(sync=true){localStorage.setItem('str_checks',JSON.stringify(S.checks));if(sync)scheduleSync();}
+function saveVendorBlock(sync=true){localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));if(sync)scheduleSync();}
 function saveFolder(){
   S.folderId  ? localStorage.setItem('str_fid',S.folderId)    : localStorage.removeItem('str_fid');
   S.folderName? localStorage.setItem('str_fname',S.folderName): localStorage.removeItem('str_fname');
+  scheduleSync();
+}
+
+// ═══════════════════════════════════════════════════════════
+// DRIVE JSON SYNC (multi-device)
+// ═══════════════════════════════════════════════════════════
+const SYNC_FILENAME = 'str_expenses_2026_data.json';
+
+function scheduleSync(){
+  if(!S.gToken||_isSyncing)return;
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(syncToDrive,2500);
+}
+
+function setSyncStatus(msg,err=false){
+  const el=document.getElementById('sync-status');
+  if(el){el.textContent=msg;el.style.color=err?'var(--red)':'var(--green-pale)';}
+}
+
+async function findSyncFile(){
+  try{
+    const q=encodeURIComponent(`name='${SYNC_FILENAME}' and trashed=false`);
+    const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+      {headers:{Authorization:'Bearer '+S.gToken}});
+    const d=await r.json();
+    if(d.files&&d.files.length){
+      syncFileId=d.files[0].id;
+      localStorage.setItem('str_sync_id',syncFileId);
+      return syncFileId;
+    }
+  }catch(e){}
+  return null;
+}
+
+async function syncFromDrive(){
+  if(!S.gToken)return;
+  setSyncStatus('Syncing…');
+  _isSyncing=true;
+  try{
+    const fid=syncFileId||await findSyncFile();
+    if(!fid){setSyncStatus('');_isSyncing=false;return;}
+    const r=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,
+      {headers:{Authorization:'Bearer '+S.gToken}});
+    if(!r.ok)throw new Error('read failed');
+    const data=await r.json();
+    if(data.entries)  S.entries    =data.entries;
+    if(data.recs)     S.recs       =data.recs;
+    if(data.accounts) S.accounts   =data.accounts;
+    if(data.checks)   S.checks     =data.checks;
+    if(data.vendorBlock) S.vendorBlock=new Set(data.vendorBlock);
+    if(data.folderId){S.folderId=data.folderId;S.folderName=data.folderName||'';}
+    // Write to localStorage without re-triggering sync
+    localStorage.setItem('str_entries_26',JSON.stringify(S.entries));
+    localStorage.setItem('str_recs',JSON.stringify(S.recs));
+    localStorage.setItem('str_accounts',JSON.stringify(S.accounts));
+    localStorage.setItem('str_checks',JSON.stringify(S.checks));
+    localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));
+    if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
+    setSyncStatus('Synced ✓');
+    renderView(S.view);
+  }catch(e){setSyncStatus('Sync failed',true);}
+  finally{_isSyncing=false;}
+}
+
+async function syncToDrive(){
+  if(!S.gToken||_isSyncing)return;
+  _isSyncing=true;
+  setSyncStatus('Saving…');
+  try{
+    const payload=JSON.stringify({
+      entries:S.entries, recs:S.recs, accounts:S.accounts,
+      checks:S.checks, vendorBlock:[...S.vendorBlock],
+      folderId:S.folderId, folderName:S.folderName,
+      savedAt:new Date().toISOString()
+    });
+    const blob=new Blob([payload],{type:'application/json'});
+    let fid=syncFileId||await findSyncFile();
+    if(fid){
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fid}?uploadType=media`,{
+        method:'PATCH',headers:{Authorization:'Bearer '+S.gToken,'Content-Type':'application/json'},body:blob});
+    } else {
+      const form=new FormData();
+      form.append('metadata',new Blob([JSON.stringify({name:SYNC_FILENAME})],{type:'application/json'}));
+      form.append('file',blob);
+      const r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+        {method:'POST',headers:{Authorization:'Bearer '+S.gToken},body:form});
+      const d=await r.json();
+      if(d.id){syncFileId=d.id;localStorage.setItem('str_sync_id',syncFileId);}
+    }
+    setSyncStatus('Saved to Drive ✓');
+  }catch(e){setSyncStatus('Save failed',true);}
+  finally{_isSyncing=false;}
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -465,7 +584,14 @@ function suggestCat(vendor,prop){
 function vendorHistory(){
   const seen=new Set(S.entries.map(e=>e.vendor).filter(Boolean));
   VENDOR_RULES.forEach(r=>r.match.forEach(m=>seen.add(m.replace(/\b\w/g,c=>c.toUpperCase()))));
-  return[...seen].sort();
+  return[...seen].filter(v=>!S.vendorBlock.has(v)).sort();
+}
+function blockVendor(v){
+  S.vendorBlock.add(v);
+  saveVendorBlock();
+  const ac=document.getElementById('vendor-ac');
+  if(ac)ac.style.display='none';
+  toast('Removed "'+v+'" from suggestions');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -488,10 +614,11 @@ async function fetchUserInfo(){
   try{
     const r=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+S.gToken}});
     const u=await r.json();
-    S.gUser={name:u.name,email:u.email};
+    S.gUser={name:u.name||u.given_name||u.email||'User',email:u.email};
     renderSbUser();
-    toast('Signed in as '+u.email);
+    toast('Signed in as '+(S.gUser.name));
     if(S.view==='settings')renderView('settings');
+    syncFromDrive();
   }catch(e){}
 }
 function signIn(){
@@ -542,7 +669,7 @@ async function driveFolderSearch(q){
 let _tt;
 function toast(msg,err=false){
   const el=document.getElementById('toast');
-  el.textContent=msg;
+  el.innerHTML=msg;
   el.className=err?'show err':'show';
   clearTimeout(_tt);
   _tt=setTimeout(()=>el.className='',3200);
@@ -572,9 +699,13 @@ function renderSbUser(){
   if(S.gUser){
     el.innerHTML=`<div class="u-name">${esc(S.gUser.name)}</div>
       <div class="u-email">${esc(S.gUser.email)}</div>
-      <button class="sb-btn" onclick="signOut()">Sign out</button>`;
+      <div id="sync-status" style="font-size:10px;color:var(--green-pale);margin:4px 0 6px;min-height:14px;opacity:.8"></div>
+      <div style="display:flex;gap:6px">
+        <button class="sb-btn" style="flex:1" onclick="syncFromDrive()">↓ Sync</button>
+        <button class="sb-btn" style="flex:1" onclick="signOut()">Sign out</button>
+      </div>`;
   } else {
-    el.innerHTML=`<div style="margin-bottom:7px;font-size:11px">Google Drive</div>
+    el.innerHTML=`<div style="margin-bottom:7px;font-size:11px">Sign in to sync across devices</div>
       <button class="sb-btn" onclick="signIn()">Sign in with Google</button>`;
   }
 }
@@ -767,7 +898,13 @@ function onVendorInput(v){
   if(!v||v.length<2){ac.style.display='none';return;}
   const matches=vendorHistory().filter(x=>x.toLowerCase().includes(v.toLowerCase())).slice(0,8);
   if(!matches.length){ac.style.display='none';return;}
-  ac.innerHTML=matches.map(m=>`<div class="ac-item" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</div>`).join('');
+  ac.innerHTML=matches.map(m=>`
+    <div class="ac-item" style="display:flex;align-items:center;justify-content:space-between;padding:0">
+      <span style="flex:1;padding:7px 11px" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</span>
+      <span onmousedown="event.preventDefault();blockVendor('${esc(m)}')" title="Remove from suggestions"
+        style="padding:7px 10px;color:var(--text-light);cursor:pointer;font-size:14px;line-height:1;flex-shrink:0"
+        onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-light)'">×</span>
+    </div>`).join('');
   ac.style.display='block';
 }
 function closeAC(){const ac=document.getElementById('vendor-ac');if(ac)ac.style.display='none';}
@@ -863,7 +1000,7 @@ async function submitAdd(){
   }
 
   S.entries.unshift(entry);saveEntries();
-  toast(`${icon('check',12)} Expense saved`);
+  toast('Expense saved');
   resetAddForm();
 }
 
@@ -984,11 +1121,20 @@ window._recSave=function(id){
 // ═══════════════════════════════════════════════════════════
 // VIEW: HISTORY
 // ═══════════════════════════════════════════════════════════
+function sortArrow(col){
+  if(S.histSort.col!==col)return'<span style="opacity:.25;font-size:9px"> ⇅</span>';
+  return S.histSort.dir==='asc'?'<span style="font-size:9px"> ▲</span>':' <span style="font-size:9px">▼</span>';
+}
+function sortHistory(col){
+  if(S.histSort.col===col) S.histSort.dir=S.histSort.dir==='asc'?'desc':'asc';
+  else{S.histSort.col=col;S.histSort.dir=col==='amount'?'desc':'asc';}
+  renderView('history');
+}
 function buildHistory(){
   const filtered=filteredEntries();
   const total=filtered.reduce((s,e)=>s+e.amount,0);
-
   const allCats=[...new Set([...CATS_PEARL,...CATS_JAYS])].sort();
+  const th='cursor:pointer;user-select:none;white-space:nowrap';
   const rows=filtered.length?filtered.map(e=>{
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
     return`<tr>
@@ -1001,12 +1147,13 @@ function buildHistory(){
       <td style="color:var(--text-mid);font-size:11px;max-width:140px">${esc(e.category)}</td>
       <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
       <td style="text-align:center">${rcpt}</td>
-      <td><button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${e.id}')" title="Delete">${icon('trash',12)}</button></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn btn-ghost btn-icon btn-xs" onclick="editEntry('${e.id}')" title="Edit">${icon('edit',12)}</button>
+        <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${e.id}')" title="Delete">${icon('trash',12)}</button>
+      </td>
     </tr>`;
   }).join(''):`<tr><td colspan="7" class="empty" style="padding:36px"><p>No entries match the current filters.</p></td></tr>`;
-
   const hasFilters=S.fSearch||S.fProp||S.fCat||S.fFrom||S.fTo;
-
   return`
   <div class="page-header">
     <h2>History</h2>
@@ -1017,11 +1164,11 @@ function buildHistory(){
       <input type="text" id="fi-search" placeholder="Search vendor or notes…" value="${esc(S.fSearch)}" oninput="S.fSearch=this.value;rerenderTable()">
       <select id="fi-prop" onchange="S.fProp=this.value;rerenderTable()">
         <option value="">All properties</option>
-        ${['pearl','jays','both'].map(p=>`<option value="${p}"${S.fProp===p?' selected':''}>${PROP_SHORT[p]}</option>`).join('')}
+        ${['pearl','jays','both'].map(p=>`<option value="${p}"${S.fProp===p?' selected':''} >${PROP_SHORT[p]}</option>`).join('')}
       </select>
       <select id="fi-cat" onchange="S.fCat=this.value;rerenderTable()">
         <option value="">All categories</option>
-        ${allCats.map(c=>`<option value="${c}"${S.fCat===c?' selected':''}>${c}</option>`).join('')}
+        ${allCats.map(c=>`<option value="${c}"${S.fCat===c?' selected':''} >${c}</option>`).join('')}
       </select>
       <input type="date" id="fi-from" value="${S.fFrom}" onchange="S.fFrom=this.value;rerenderTable()" title="From date">
       <input type="date" id="fi-to"   value="${S.fTo}"   onchange="S.fTo=this.value;rerenderTable()"   title="To date">
@@ -1029,22 +1176,23 @@ function buildHistory(){
     </div>
     <div class="table-wrap" id="hist-table">
       <table class="data-table">
-        <thead>
-          <tr>
-            <th>Date</th><th>Vendor</th><th>Property</th><th>Category</th>
-            <th style="text-align:right">Amount</th><th style="text-align:center">Rcpt</th><th></th>
-          </tr>
-        </thead>
+        <thead><tr>
+          <th style="${th}" onclick="sortHistory('date')">Date${sortArrow('date')}</th>
+          <th style="${th}" onclick="sortHistory('vendor')">Vendor${sortArrow('vendor')}</th>
+          <th style="${th}" onclick="sortHistory('property')">Property${sortArrow('property')}</th>
+          <th style="${th}" onclick="sortHistory('category')">Category${sortArrow('category')}</th>
+          <th style="${th};text-align:right" onclick="sortHistory('amount')">Amount${sortArrow('amount')}</th>
+          <th style="text-align:center">Rcpt</th><th></th>
+        </tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${filtered.length?`<div style="padding:9px 12px;text-align:right;border-top:2px solid var(--border-lt);font-size:11px;color:var(--text-mid)">${filtered.length} entries &middot; Total: <strong style="color:var(--text)">${fmt$(total)}</strong></div>`:''}
     </div>
   </div>`;
 }
-
 function bindHistFilters(){}
 function filteredEntries(){
-  return S.entries.filter(e=>{
+  const arr=S.entries.filter(e=>{
     if(S.fSearch){const s=S.fSearch.toLowerCase();if(!e.vendor.toLowerCase().includes(s)&&!(e.notes||'').toLowerCase().includes(s))return false;}
     if(S.fProp&&e.property!==S.fProp)return false;
     if(S.fCat&&e.category!==S.fCat)return false;
@@ -1052,25 +1200,71 @@ function filteredEntries(){
     if(S.fTo&&e.date>S.fTo)return false;
     return true;
   });
+  const{col,dir}=S.histSort;
+  arr.sort((a,b)=>{
+    const av=col==='amount'?+a.amount:(a[col]||'').toLowerCase();
+    const bv=col==='amount'?+b.amount:(b[col]||'').toLowerCase();
+    const cmp=av<bv?-1:av>bv?1:0;
+    return dir==='asc'?cmp:-cmp;
+  });
+  return arr;
 }
-function rerenderTable(){
-  // Just rebuild the history view (filters are captured via oninput/onchange)
-  const el=document.getElementById('view');
-  const newH=buildHistory();
-  // Only replace tbody + footer to avoid focus loss on filter inputs
-  const tmp=document.createElement('div');tmp.innerHTML=newH;
-  const newWrap=tmp.querySelector('#hist-table');
-  const curWrap=document.getElementById('hist-table');
-  if(newWrap&&curWrap)curWrap.replaceWith(newWrap);
-  // Rebuild filter clear button area
-  const newFBar=tmp.querySelector('.filters-bar');
-  const curFBar=document.querySelector('.filters-bar');
-  if(newFBar&&curFBar)curFBar.replaceWith(newFBar);
-}
+function rerenderTable(){renderView('history');}
 function clearFilters(){S.fSearch='';S.fProp='';S.fCat='';S.fFrom='';S.fTo='';renderView('history');}
 function delEntry(id){
-  confirm2('Delete this expense?',()=>{S.entries=S.entries.filter(e=>e.id!==id);saveEntries();rerenderTable();toast('Deleted');});
+  confirm2('Delete this expense?',()=>{
+    S.entries=S.entries.filter(e=>e.id!==id);
+    saveEntries();renderView('history');toast('Deleted');
+  });
 }
+function editEntry(id){
+  const e=S.entries.find(x=>x.id===id);if(!e)return;
+  const cats=getCats(e.property);
+  showModal(`
+    <h3>Edit Expense</h3>
+    <div class="form-row" style="margin-bottom:12px">
+      <div class="form-group"><label>Date</label><input type="date" id="e-date" value="${e.date}"></div>
+      <div class="form-group"><label>Vendor</label><input type="text" id="e-vendor" value="${esc(e.vendor)}"></div>
+    </div>
+    <div class="form-row" style="margin-bottom:12px">
+      <div class="form-group">
+        <label>Property</label>
+        <select id="e-prop" onchange="editPropChange(this.value)">
+          ${['pearl','jays','both'].map(p=>`<option value="${p}"${p===e.property?' selected':''} >${PROP_SHORT[p]}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select id="e-cat">${cats.map(c=>`<option value="${c}"${c===e.category?' selected':''} >${c}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:16px">
+      <div class="form-group"><label>Amount ($)</label><input type="number" id="e-amount" value="${e.amount}" step="0.01" min="0"></div>
+      <div class="form-group"><label>Notes</label><input type="text" id="e-notes" value="${esc(e.notes||'')}"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="_editSave('${e.id}')">Save Changes</button>
+    </div>
+  `);
+}
+function editPropChange(prop){
+  const s=document.getElementById('e-cat');if(!s)return;
+  const prev=s.value;const cats=getCats(prop);
+  s.innerHTML=cats.map(c=>`<option value="${c}"${c===prev?' selected':''} >${c}</option>`).join('');
+}
+window._editSave=function(id){
+  const e=S.entries.find(x=>x.id===id);if(!e)return;
+  const date=document.getElementById('e-date').value;
+  const vendor=document.getElementById('e-vendor').value.trim();
+  const property=document.getElementById('e-prop').value;
+  const category=document.getElementById('e-cat').value;
+  const amount=parseFloat(document.getElementById('e-amount').value);
+  const notes=document.getElementById('e-notes').value.trim();
+  if(!date||!vendor||!category||!(amount>0)){toast('Please fill in all required fields',true);return;}
+  Object.assign(e,{date,vendor,property,category,amount,notes});
+  saveEntries();closeModal();renderView('history');toast('Expense updated');
+};
 
 // ═══════════════════════════════════════════════════════════
 // VIEW: SUMMARY
@@ -1080,9 +1274,9 @@ function buildSummary(){
   S.entries.forEach(e=>{
     if(!e.date?.startsWith('2026'))return;
     const a=e.amount,c=e.category;
-    if(e.property==='pearl')      {pearlT[c]=(pearlT[c]||0)+a;}
-    else if(e.property==='jays')  {jaysT[c]=(jaysT[c]||0)+a;}
-    else if(e.property==='both')  {pearlT[c]=(pearlT[c]||0)+a/2;jaysT[c]=(jaysT[c]||0)+a/2;}
+    if(e.property==='pearl')      {pearlT[pearlCat(c)]=(pearlT[pearlCat(c)]||0)+a;}
+    else if(e.property==='jays')  {jaysT[jaysCat(c)]=(jaysT[jaysCat(c)]||0)+a;}
+    else if(e.property==='both')  {pearlT[pearlCat(c)]=(pearlT[pearlCat(c)]||0)+a/2;jaysT[jaysCat(c)]=(jaysT[jaysCat(c)]||0)+a/2;}
   });
   const pTotal=Object.values(pearlT).reduce((s,v)=>s+v,0);
   const jTotal=Object.values(jaysT).reduce((s,v)=>s+v,0);
@@ -1179,9 +1373,9 @@ function buildReport(){
   allMonthEntries.forEach(e=>{
     const a=entryReportAmt(e);if(!a)return;
     const c=e.category;
-    if(e.property==='pearl')     {pearlMo[c]=(pearlMo[c]||0)+a;}
-    else if(e.property==='jays') {jaysMo[c]=(jaysMo[c]||0)+a;}
-    else if(e.property==='both') {pearlMo[c]=(pearlMo[c]||0)+a/2;jaysMo[c]=(jaysMo[c]||0)+a/2;}
+    if(e.property==='pearl')     {pearlMo[pearlCat(c)]=(pearlMo[pearlCat(c)]||0)+a;}
+    else if(e.property==='jays') {jaysMo[jaysCat(c)]=(jaysMo[jaysCat(c)]||0)+a;}
+    else if(e.property==='both') {pearlMo[pearlCat(c)]=(pearlMo[pearlCat(c)]||0)+a/2;jaysMo[jaysCat(c)]=(jaysMo[jaysCat(c)]||0)+a/2;}
   });
   const pearlMoTotal=Object.values(pearlMo).reduce((s,v)=>s+v,0);
   const jaysMoTotal =Object.values(jaysMo).reduce((s,v)=>s+v,0);
@@ -1191,9 +1385,9 @@ function buildReport(){
   allYtdEntries.forEach(e=>{
     const a=entryReportAmt(e);if(!a)return;
     const c=e.category;
-    if(e.property==='pearl')     {pearlYtd[c]=(pearlYtd[c]||0)+a;}
-    else if(e.property==='jays') {jaysYtd[c]=(jaysYtd[c]||0)+a;}
-    else if(e.property==='both') {pearlYtd[c]=(pearlYtd[c]||0)+a/2;jaysYtd[c]=(jaysYtd[c]||0)+a/2;}
+    if(e.property==='pearl')     {pearlYtd[pearlCat(c)]=(pearlYtd[pearlCat(c)]||0)+a;}
+    else if(e.property==='jays') {jaysYtd[jaysCat(c)]=(jaysYtd[jaysCat(c)]||0)+a;}
+    else if(e.property==='both') {pearlYtd[pearlCat(c)]=(pearlYtd[pearlCat(c)]||0)+a/2;jaysYtd[jaysCat(c)]=(jaysYtd[jaysCat(c)]||0)+a/2;}
   });
   const pearlYtdTotal=Object.values(pearlYtd).reduce((s,v)=>s+v,0);
   const jaysYtdTotal =Object.values(jaysYtd).reduce((s,v)=>s+v,0);
@@ -1467,10 +1661,9 @@ function buildChecklist(){
 function toggleCheck(id, checked){
   if(checked) S.checks[id]=true;
   else delete S.checks[id];
-  // Update row styling without full re-render
+  saveChecks();
   const row=document.getElementById('cl-'+id);
   if(row) row.className='cl-row'+(checked?' cl-done':'');
-  // Update progress bar and counter
   const total=S.accounts.length;
   const done=S.accounts.filter(a=>S.checks[a.id]).length;
   const pct=total?Math.round(done/total*100):0;
@@ -1482,6 +1675,7 @@ function toggleCheck(id, checked){
 
 function resetChecks(){
   S.checks={};
+  saveChecks();
   renderView('checklist');
   toast('Checklist reset');
 }
@@ -1556,12 +1750,26 @@ function buildSettings(){
       <div class="set-row">
         <div>
           <div class="set-label">Google Account</div>
-          <div class="set-sub">${S.gUser?S.gUser.email:'Not signed in — needed for Drive receipt filing'}</div>
+          <div class="set-sub">${S.gUser?S.gUser.email:'Not signed in — required for sync and receipt filing'}</div>
         </div>
         ${S.gUser
           ?`<button class="btn btn-secondary btn-sm" onclick="signOut()">Sign Out</button>`
           :`<button class="btn btn-primary btn-sm" onclick="signIn()">Sign in with Google</button>`
         }
+      </div>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Multi-Device Sync</div>
+          <div class="set-sub">Data saved to <code style="font-size:10px;background:var(--cream-dark);padding:1px 5px;border-radius:3px">${SYNC_FILENAME}</code> in your Drive root.<br>
+          Sign in on any device to access your data.</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          ${S.gUser
+            ?`<button class="btn btn-primary btn-sm" onclick="syncFromDrive()">↓ Pull from Drive</button>
+               <button class="btn btn-secondary btn-sm" onclick="syncToDrive()">↑ Push to Drive</button>`
+            :`<span class="muted" style="font-size:11px">Sign in to enable</span>`
+          }
+        </div>
       </div>
       <div class="set-row">
         <div>
@@ -1660,18 +1868,20 @@ function pickFolder(id,name){
 function exportCSV(){
   const rows=[['Date','Description','Account','Expense']];
   [...S.entries].sort((a,b)=>a.date<b.date?-1:1).forEach(e=>{
-    const desc=e.vendor+(e.notes?' — '+e.notes:'')+' ('+e.category+')';
+    const desc=e.vendor+(e.notes?' — '+e.notes:'');
     if(e.property==='both'){
-      rows.push([e.date,desc,'Pearl in the Pines',(e.amount/2).toFixed(2)]);
-      rows.push([e.date,desc,"Jay's Retreat",(e.amount/2).toFixed(2)]);
+      rows.push([e.date, desc, 'Pearl: '+pearlCat(e.category), (e.amount/2).toFixed(2)]);
+      rows.push([e.date, desc, "Jay's: "+jaysCat(e.category),  (e.amount/2).toFixed(2)]);
+    } else if(e.property==='pearl'){
+      rows.push([e.date, desc, 'Pearl: '+e.category, e.amount.toFixed(2)]);
     } else {
-      rows.push([e.date,desc,e.property==='pearl'?'Pearl in the Pines':"Jay's Retreat",e.amount.toFixed(2)]);
+      rows.push([e.date, desc, "Jay's: "+e.category, e.amount.toFixed(2)]);
     }
   });
   const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const a=Object.assign(document.createElement('a'),{href:URL.createObjectURL(new Blob([csv],{type:'text/csv'})),download:'STR_Expenses_2026.csv'});
   a.click();URL.revokeObjectURL(a.href);
-  toast(`${icon('check',12)} CSV exported (${rows.length-1} rows)`);
+  toast(`CSV exported (${rows.length-1} rows)`);
 }
 
 // ═══════════════════════════════════════════════════════════
