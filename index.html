@@ -308,45 +308,61 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleusercontent.com';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-const CATS_PEARL = ['Advertising','Auto & travel','Cleaning and maintenance','Commissions and fees','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Asset','Other'];
-const CATS_JAYS  = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions and fees','Contract labor','Insurance','Legal and professional services','Management fees','Other interest','Rent or lease','Repairs and maintenance','Supplies','Taxes','Utilities','Asset','Other'];
+// Pearl = Schedule E (Pearl in the Pines — managed STR)
+const CATS_PEARL = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Other'];
+// Jay's = Schedule C (Jay's Retreat — owner-operated STR)
+const CATS_JAYS  = ['Supplies','Advertising','Car and truck expenses','Commissions and fees','Contract labor','Legal and professional services','Office expense','Rent or lease','Repairs and maintenance','Taxes and licenses','Utilities','Other expenses'];
 
-// Maps any category to its Pearl (Sch C) equivalent
+// Maps any category to its Pearl (Sch E) equivalent
 const TO_PEARL_CAT = {
-  'Auto and travel':                  'Auto & travel',
-  'Legal and professional services':  'Legal and other professional fees',
-  'Repairs and maintenance':          'Repairs',
+  'Car and truck expenses':           'Auto and travel',
+  'Commissions and fees':             'Commissions',
   'Contract labor':                   'Other',
+  'Legal and professional services':  'Legal and other professional fees',
+  'Office expense':                   'Other',
   'Rent or lease':                    'Other',
-};
-// Maps any category to its Jay's (Sch E) equivalent
-const TO_JAYS_CAT = {
+  'Repairs and maintenance':          'Repairs',
+  'Taxes and licenses':               'Taxes',
+  'Other expenses':                   'Other',
+  // legacy compat
   'Auto & travel':                    'Auto and travel',
+  'Commissions and fees':             'Commissions',
+};
+// Maps any category to its Jay's (Sch C) equivalent
+const TO_JAYS_CAT = {
+  'Auto and travel':                  'Car and truck expenses',
+  'Auto & travel':                    'Car and truck expenses',
+  'Commissions':                      'Commissions and fees',
+  'Insurance':                        'Other expenses',
   'Legal and other professional fees':'Legal and professional services',
+  'Management fees':                  'Other expenses',
+  'Mortgage interest':                'Other expenses',
+  'Other interest':                   'Other expenses',
   'Repairs':                          'Repairs and maintenance',
-  'Mortgage interest':                'Other interest',
+  'Taxes':                            'Taxes and licenses',
+  'Other':                            'Other expenses',
 };
 function pearlCat(c){return TO_PEARL_CAT[c]||c;}
 function jaysCat(c){return TO_JAYS_CAT[c]||c;}
 
 const VENDOR_RULES = [
-  {match:['marcela castro'],          pearl:'Cleaning and maintenance', jays:'Contract labor'},
-  {match:['santiago morente'],         pearl:'Cleaning and maintenance', jays:'Contract labor'},
-  {match:['t-mobile','tmobile'],       both:'Utilities'},
-  {match:['anec'],                     both:'Utilities'},
-  {match:['town of chincoteague'],     both:'Utilities'},
-  {match:['pricelabs'],                pearl:'Legal and other professional fees', jays:'Legal and professional services'},
-  {match:['jim oconnor'],              pearl:'Mortgage interest', jays:'Commissions and fees'},
-  {match:['amazon'],                   both:'Supplies'},
-  {match:['walmart'],                  both:'Supplies'},
-  {match:["sam's club",'sams club'],   both:'Supplies'},
-  {match:['home depot'],               both:'Supplies'},
-  {match:['harbor freight'],           both:'Supplies'},
-  {match:['ebay'],                     both:'Supplies'},
-  {match:['canva'],                    both:'Advertising'},
-  {match:['sunbelt rentals'],          pearl:'Cleaning and maintenance', jays:'Rent or lease'},
-  {match:['accomack county','county of accomack'], both:'Taxes'},
-  {match:['windsor mt joy'],           both:'Insurance'},
+  {match:['marcela castro'],                       pearl:'Cleaning and maintenance', jays:'Contract labor'},
+  {match:['santiago morente'],                     pearl:'Cleaning and maintenance', jays:'Contract labor'},
+  {match:['t-mobile','tmobile'],                   both:'Utilities'},
+  {match:['anec'],                                 both:'Utilities'},
+  {match:['town of chincoteague'],                 both:'Utilities'},
+  {match:['pricelabs'],                            pearl:'Legal and other professional fees', jays:'Legal and professional services'},
+  {match:['jim oconnor'],                          pearl:'Mortgage interest', jays:'Commissions and fees'},
+  {match:['amazon'],                               both:'Supplies'},
+  {match:['walmart'],                              both:'Supplies'},
+  {match:["sam's club",'sams club'],               both:'Supplies'},
+  {match:['home depot'],                           both:'Supplies'},
+  {match:['harbor freight'],                       both:'Supplies'},
+  {match:['ebay'],                                 both:'Supplies'},
+  {match:['canva'],                                both:'Advertising'},
+  {match:['sunbelt rentals'],                      pearl:'Cleaning and maintenance', jays:'Rent or lease'},
+  {match:['accomack county','county of accomack'], pearl:'Taxes', jays:'Taxes and licenses'},
+  {match:['windsor mt joy'],                       pearl:'Insurance', jays:'Other expenses'},
 ];
 
 const DEFAULT_RECS = [
@@ -579,7 +595,12 @@ function suggestCat(vendor,prop){
     if(r.match.some(m=>vl.includes(m))){
       if(prop==='pearl'&&r.pearl)return r.pearl;
       if(prop==='jays' &&r.jays) return r.jays;
-      if(r.both)return r.both;
+      // 'both' rule: return schedule-appropriate version
+      if(r.both){
+        if(prop==='pearl')return pearlCat(r.both);
+        if(prop==='jays') return jaysCat(r.both);
+        return r.both;
+      }
       return r.pearl||r.jays||'';
     }
   }
@@ -870,13 +891,37 @@ function updateSaveBtn(vendor){
           msg.style.color='var(--amber)';msg.style.fontSize='11px';msg.style.fontStyle='italic';}
 }
 
+function syncLineItemsFromDOM(){
+  document.querySelectorAll('.li-row').forEach((row,i)=>{
+    if(!AF.lineItems[i])return;
+    AF.lineItems[i].property = row.querySelector('.li-prop')?.value||'pearl';
+    AF.lineItems[i].category = row.querySelector('.li-cat')?.value||'';
+    AF.lineItems[i].desc     = row.querySelector('.li-desc')?.value||'';
+    AF.lineItems[i].amt      = row.querySelector('.li-amt')?.value||'';
+    AF.lineItems[i].inReport = row.querySelector('.li-rpt')?.checked??true;
+  });
+}
+
 function liPropChange(i,prop){
+  syncLineItemsFromDOM();
+  if(prop==='both'){
+    // Split this line into Pearl + Jay's at 50% each
+    const li=AF.lineItems[i];
+    const vendor=document.getElementById('f-vendor')?.value?.trim()||'';
+    const amt=parseFloat(li.amt)||0;
+    const half=amt>0?(amt/2).toFixed(2):'';
+    const pearlLine={property:'pearl',category:suggestCat(vendor,'pearl'),desc:li.desc,amt:half,inReport:li.inReport!==false};
+    const jaysLine ={property:'jays', category:suggestCat(vendor,'jays'), desc:li.desc,amt:half,inReport:li.inReport!==false};
+    AF.lineItems.splice(i,1,pearlLine,jaysLine);
+    document.getElementById('li-wrap').innerHTML=renderLISection();
+    return;
+  }
   AF.lineItems[i].property=prop;
-  // Rebuild category select for this row
+  // Rebuild category select for this row only
   const rows=document.querySelectorAll('.li-row');
   const sel=rows[i]?.querySelector('.li-cat');
   if(sel){
-    const prev=sel.value;
+    const prev=AF.lineItems[i].category;
     const cats=getCats(prop);
     sel.innerHTML=`<option value="">— cat —</option>`+cats.map(c=>`<option value="${c}"${c===prev?' selected':''}>${c}</option>`).join('');
     if(!cats.includes(prev))sel.value='';
@@ -915,27 +960,37 @@ function onVendorInput(v){
   if(!ac)return;
   if(!v||v.length<2){ac.style.display='none';return;}
   const matches=vendorHistory().filter(x=>x.toLowerCase().includes(v.toLowerCase())).slice(0,8);
-  if(!matches.length){ac.style.display='none';return;}
-  ac.innerHTML=matches.map(m=>`
-    <div class="ac-item" style="display:flex;align-items:center;justify-content:space-between;padding:0">
-      <span style="flex:1;padding:7px 11px" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</span>
-      <span onmousedown="event.preventDefault();blockVendor('${esc(m)}')" title="Remove from suggestions"
-        style="padding:7px 10px;color:var(--text-light);cursor:pointer;font-size:14px;line-height:1;flex-shrink:0"
-        onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-light)'">×</span>
-    </div>`).join('');
-  ac.style.display='block';
+  if(!matches.length){ac.style.display='none';}
+  else{
+    ac.innerHTML=matches.map(m=>`
+      <div class="ac-item" style="display:flex;align-items:center;justify-content:space-between;padding:0">
+        <span style="flex:1;padding:7px 11px" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</span>
+        <span onmousedown="event.preventDefault();blockVendor('${esc(m)}')" title="Remove from suggestions"
+          style="padding:7px 10px;color:var(--text-light);cursor:pointer;font-size:14px;line-height:1;flex-shrink:0"
+          onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-light)'">×</span>
+      </div>`).join('');
+    ac.style.display='block';
+  }
+  // Auto-suggest categories if vendor matches a rule
+  const cat=suggestCat(v,'pearl');
+  if(cat){
+    document.querySelectorAll('.li-row').forEach(row=>{
+      const prop=row.querySelector('.li-prop')?.value||'pearl';
+      const sug=suggestCat(v,prop);
+      if(sug){const s=row.querySelector('.li-cat');if(s&&!s.value)s.value=sug;}
+    });
+  }
 }
 function closeAC(){const ac=document.getElementById('vendor-ac');if(ac)ac.style.display='none';}
 function pickVendor(v){
   const el=document.getElementById('f-vendor');
   if(el){el.value=v;onVendorInput('');updateSaveBtn(v);}
-  // Auto-suggest category into first line item
-  const firstRow=document.querySelector('.li-row');
-  if(firstRow){
-    const prop=firstRow.querySelector('.li-prop')?.value||'pearl';
+  // Auto-suggest category into every line item based on its property
+  document.querySelectorAll('.li-row').forEach(row=>{
+    const prop=row.querySelector('.li-prop')?.value||'pearl';
     const cat=suggestCat(v,prop);
-    if(cat){const s=firstRow.querySelector('.li-cat');if(s)s.value=cat;}
-  }
+    if(cat){const s=row.querySelector('.li-cat');if(s)s.value=cat;}
+  });
 }
 
 function resetAddForm(){
