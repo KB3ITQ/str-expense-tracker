@@ -533,32 +533,83 @@ async function syncFromDrive(){
   _isSyncing=true;
   try{
     const fid=syncFileId||await findSyncFile();
-    if(!fid){setSyncStatus('');_isSyncing=false;return;}
+    if(!fid){
+      // No file on Drive yet — push local data up
+      setSyncStatus('No Drive file — pushing local data…');
+      _isSyncing=false;
+      await syncToDrive();
+      return;
+    }
     const r=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,
       {headers:{Authorization:'Bearer '+S.gToken}});
     if(!r.ok)throw new Error('read failed');
     const data=await r.json();
-    if(data.entries)  S.entries    =data.entries;
-    if(data.recs)     S.recs       =data.recs;
-    if(data.accounts) S.accounts   =data.accounts;
-    if(data.checks)   S.checks     =data.checks;
-    if(data.vendorBlock) S.vendorBlock=new Set(data.vendorBlock);
-    if(data.folderId){S.folderId=data.folderId;S.folderName=data.folderName||'';}
-    // Write to localStorage without re-triggering sync
+
+    // ── MERGE STRATEGY ──────────────────────────────────────
+    // Merge entries by ID — keep whichever version is newer (by createdAt)
+    // Never discard local entries that don't exist on Drive
+    const localById={};
+    S.entries.forEach(e=>localById[e.id]=e);
+    const driveById={};
+    (data.entries||[]).forEach(e=>driveById[e.id]=e);
+
+    const merged=[];
+    const allIds=new Set([...Object.keys(localById),...Object.keys(driveById)]);
+    allIds.forEach(id=>{
+      const local=localById[id];
+      const drive=driveById[id];
+      if(local&&drive){
+        // Keep whichever was saved more recently
+        merged.push((local.createdAt||0)>=(drive.createdAt||0)?local:drive);
+      } else {
+        merged.push(local||drive);
+      }
+    });
+    merged.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+
+    // For non-entry data, prefer Drive if it has content, otherwise keep local
+    const mergedRecs    = (data.recs    &&data.recs.length)    ? data.recs     : S.recs;
+    const mergedAccts   = (data.accounts&&data.accounts.length) ? data.accounts : S.accounts;
+    const mergedChecks  = data.checks  ||S.checks;
+    const mergedVBlock  = data.vendorBlock||[...S.vendorBlock];
+    const mergedFolder  = data.folderId||S.folderId;
+    const mergedFName   = data.folderName||S.folderName;
+
+    S.entries     = merged;
+    S.recs        = mergedRecs;
+    S.accounts    = mergedAccts;
+    S.checks      = mergedChecks;
+    S.vendorBlock = new Set(mergedVBlock);
+    if(mergedFolder){S.folderId=mergedFolder;S.folderName=mergedFName||'';}
+
+    // Write merged data to localStorage
     localStorage.setItem('str_entries_26',JSON.stringify(S.entries));
     localStorage.setItem('str_recs',JSON.stringify(S.recs));
     localStorage.setItem('str_accounts',JSON.stringify(S.accounts));
     localStorage.setItem('str_checks',JSON.stringify(S.checks));
     localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));
     if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
-    setSyncStatus('Synced ✓');
+
+    setSyncStatus(`Synced ✓ (${S.entries.length} entries)`);
     renderView(S.view);
-  }catch(e){setSyncStatus('Sync failed',true);}
+
+    // Push the merged result back to Drive so both sides are in sync
+    _isSyncing=false;
+    await syncToDrive();
+  }catch(e){
+    console.error('syncFromDrive error:',e);
+    setSyncStatus('Sync failed — local data preserved',true);
+  }
   finally{_isSyncing=false;}
 }
 
 async function syncToDrive(){
   if(!S.gToken||_isSyncing)return;
+  // Safety guard: never push empty entries over a Drive file that may have data
+  if(S.entries.length===0&&syncFileId){
+    setSyncStatus('No local data — pull first');
+    return;
+  }
   _isSyncing=true;
   setSyncStatus('Saving…');
   try{
@@ -566,7 +617,8 @@ async function syncToDrive(){
       entries:S.entries, recs:S.recs, accounts:S.accounts,
       checks:S.checks, vendorBlock:[...S.vendorBlock],
       folderId:S.folderId, folderName:S.folderName,
-      savedAt:new Date().toISOString()
+      savedAt:new Date().toISOString(),
+      entryCount:S.entries.length
     });
     const blob=new Blob([payload],{type:'application/json'});
     let fid=syncFileId||await findSyncFile();
@@ -582,7 +634,7 @@ async function syncToDrive(){
       const d=await r.json();
       if(d.id){syncFileId=d.id;localStorage.setItem('str_sync_id',syncFileId);}
     }
-    setSyncStatus('Saved to Drive ✓');
+    setSyncStatus(`Saved to Drive ✓ (${S.entries.length} entries)`);
   }catch(e){setSyncStatus('Save failed',true);}
   finally{_isSyncing=false;}
 }
@@ -658,7 +710,12 @@ async function fetchUserInfo(){
     renderSbUser();
     toast('Signed in as '+displayName);
     if(S.view==='settings')renderView('settings');
-    syncFromDrive();
+    // On sign-in: if we have local entries and no known Drive file, push first
+    if(S.entries.length>0&&!syncFileId){
+      syncToDrive();
+    } else {
+      syncFromDrive();
+    }
   }catch(e){}
 }
 function signIn(){
