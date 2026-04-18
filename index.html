@@ -309,38 +309,51 @@ const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleuser
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 // Pearl = Schedule E (Pearl in the Pines — managed STR)
-const CATS_PEARL = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Other'];
+const CATS_PEARL = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Other','Other: Office expenses'];
 // Jay's = Schedule C (Jay's Retreat — owner-operated STR)
-const CATS_JAYS  = ['Supplies','Advertising','Car and truck expenses','Commissions and fees','Contract labor','Legal and professional services','Office expense','Rent or lease','Repairs and maintenance','Taxes and licenses','Utilities','Other expenses'];
+const CATS_JAYS  = ['Supplies','Advertising','Car and truck expenses','Commissions and fees','Contract labor','Insurance','Legal and professional services','Management fees','Mortgage interest','Office expense','Other interest','Rent or lease','Repairs and maintenance','Taxes and licenses','Utilities','Other'];
 
-// Maps any category to its Pearl (Sch E) equivalent
+// Maps Jay's (Sch C) category to Pearl (Sch E) equivalent
 const TO_PEARL_CAT = {
+  'Advertising':                      'Advertising',
   'Car and truck expenses':           'Auto and travel',
   'Commissions and fees':             'Commissions',
-  'Contract labor':                   'Other',
+  'Contract labor':                   'Cleaning and maintenance',
+  'Insurance':                        'Insurance',
   'Legal and professional services':  'Legal and other professional fees',
+  'Management fees':                  'Management fees',
+  'Mortgage interest':                'Mortgage interest',
   'Office expense':                   'Other',
+  'Other interest':                   'Other interest',
   'Rent or lease':                    'Other',
   'Repairs and maintenance':          'Repairs',
+  'Supplies':                         'Supplies',
   'Taxes and licenses':               'Taxes',
+  'Utilities':                        'Utilities',
+  'Other':                            'Other',
   'Other expenses':                   'Other',
+  'Office expense':                   'Other: Office expenses',
   // legacy compat
   'Auto & travel':                    'Auto and travel',
-  'Commissions and fees':             'Commissions',
 };
-// Maps any category to its Jay's (Sch C) equivalent
+// Maps Pearl (Sch E) category to Jay's (Sch C) equivalent — per user's mapping table
 const TO_JAYS_CAT = {
+  'Advertising':                      'Advertising',
   'Auto and travel':                  'Car and truck expenses',
   'Auto & travel':                    'Car and truck expenses',
+  'Cleaning and maintenance':         'Contract labor',
   'Commissions':                      'Commissions and fees',
-  'Insurance':                        'Other expenses',
+  'Insurance':                        'Insurance',
   'Legal and other professional fees':'Legal and professional services',
-  'Management fees':                  'Other expenses',
-  'Mortgage interest':                'Other expenses',
-  'Other interest':                   'Other expenses',
+  'Management fees':                  'Commissions and fees',
+  'Mortgage interest':                'Mortgage interest',
+  'Other interest':                   'Other interest',
   'Repairs':                          'Repairs and maintenance',
+  'Supplies':                         'Supplies',
   'Taxes':                            'Taxes and licenses',
-  'Other':                            'Other expenses',
+  'Utilities':                        'Utilities',
+  'Other':                            'Other',
+  'Other: Office expenses':           'Office expense',
 };
 function pearlCat(c){return TO_PEARL_CAT[c]||c;}
 function jaysCat(c){return TO_JAYS_CAT[c]||c;}
@@ -362,7 +375,7 @@ const VENDOR_RULES = [
   {match:['canva'],                                both:'Advertising'},
   {match:['sunbelt rentals'],                      pearl:'Cleaning and maintenance', jays:'Rent or lease'},
   {match:['accomack county','county of accomack'], pearl:'Taxes', jays:'Taxes and licenses'},
-  {match:['windsor mt joy'],                       pearl:'Insurance', jays:'Other expenses'},
+  {match:['windsor mt joy'],                       pearl:'Insurance', jays:'Other'},
 ];
 
 const DEFAULT_RECS = [
@@ -639,9 +652,11 @@ async function fetchUserInfo(){
   try{
     const r=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+S.gToken}});
     const u=await r.json();
-    S.gUser={name:u.name||u.given_name||u.email||'User',email:u.email};
+    // protonmail and some accounts don't return a name — use email in that case
+    const displayName=u.name&&u.name!=='User'?u.name:(u.email||'Signed in');
+    S.gUser={name:displayName,email:u.email};
     renderSbUser();
-    toast('Signed in as '+(S.gUser.name));
+    toast('Signed in as '+displayName);
     if(S.view==='settings')renderView('settings');
     syncFromDrive();
   }catch(e){}
@@ -844,13 +859,13 @@ function renderLISection(){
       <select class="li-prop" onchange="liPropChange(${i},this.value)" style="padding:7px 4px;font-size:12px">
         ${propOpts(li.property||'pearl')}
       </select>
-      <select class="li-cat" style="padding:7px 4px;font-size:12px">
+      <select class="li-cat" onchange="liCatChange(${i},this.value)" style="padding:7px 4px;font-size:12px">
         ${catOpts(li.property||'pearl',li.category)}
       </select>
       <input type="text" class="li-desc" placeholder="Description (optional)" value="${esc(li.desc)}"
-        oninput="liUpdate(${i},'desc',this.value)">
+        oninput="liDescInput(${i},this.value)">
       <input type="number" class="li-amt" placeholder="0.00" step="0.01" min="0" value="${li.amt}"
-        oninput="liUpdate(${i},'amt',this.value)">
+        oninput="liAmtInput(${i},this.value)" onfocus="liAmtFocus(${i})">
       <button class="li-remove" onclick="liRemove(${i})" title="Remove line">×</button>
     </div>`).join('');
 
@@ -905,19 +920,19 @@ function syncLineItemsFromDOM(){
 function liPropChange(i,prop){
   syncLineItemsFromDOM();
   if(prop==='both'){
-    // Split this line into Pearl + Jay's at 50% each
     const li=AF.lineItems[i];
     const vendor=document.getElementById('f-vendor')?.value?.trim()||'';
     const amt=parseFloat(li.amt)||0;
-    const half=amt>0?(amt/2).toFixed(2):'';
-    const pearlLine={property:'pearl',category:suggestCat(vendor,'pearl'),desc:li.desc,amt:half,inReport:li.inReport!==false};
-    const jaysLine ={property:'jays', category:suggestCat(vendor,'jays'), desc:li.desc,amt:half,inReport:li.inReport!==false};
+    const half=amt>0?+(amt/2).toFixed(2):'';
+    const pairId=uid();
+    const pearlLine={property:'pearl',category:suggestCat(vendor,'pearl'),desc:li.desc,amt:String(half),inReport:li.inReport!==false,pairId};
+    const jaysLine ={property:'jays', category:suggestCat(vendor,'jays'), desc:li.desc,amt:String(half),inReport:li.inReport!==false,pairId};
     AF.lineItems.splice(i,1,pearlLine,jaysLine);
     document.getElementById('li-wrap').innerHTML=renderLISection();
     return;
   }
   AF.lineItems[i].property=prop;
-  // Rebuild category select for this row only
+  if(AF.lineItems[i].pairId)delete AF.lineItems[i].pairId;
   const rows=document.querySelectorAll('.li-row');
   const sel=rows[i]?.querySelector('.li-cat');
   if(sel){
@@ -929,12 +944,85 @@ function liPropChange(i,prop){
   }
 }
 
+function updateLiTotal(){
+  const el=document.querySelector('.li-total');
+  if(el)el.innerHTML=`Total: <strong>${fmt$(liTotal())}</strong>${liReportTotal()<liTotal()?` &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong>`:''}`;
+}
+
+function liDescInput(i,v){
+  AF.lineItems[i].desc=v;
+  const pid=AF.lineItems[i].pairId;
+  if(pid){
+    AF.lineItems.forEach((li,j)=>{
+      if(j!==i&&li.pairId===pid){
+        li.desc=v;
+        const rows=document.querySelectorAll('.li-row');
+        const inp=rows[j]?.querySelector('.li-desc');
+        if(inp&&inp.value!==v)inp.value=v;
+      }
+    });
+  }
+  updateLiTotal();
+}
+
+function liAmtInput(i,v){
+  AF.lineItems[i].amt=v;
+  updateLiTotal();
+}
+
+function liAmtFocus(i){
+  const pid=AF.lineItems[i].pairId;
+  if(!pid)return;
+  if(AF.lineItems[i].property!=='jays')return;
+  const pearlIdx=AF.lineItems.findIndex((li,j)=>j!==i&&li.pairId===pid&&li.property==='pearl');
+  if(pearlIdx<0)return;
+  const pearlAmt=parseFloat(AF.lineItems[pearlIdx].amt)||0;
+  if(pearlAmt<=0)return;
+  const jaysAmt=parseFloat(AF.lineItems[i].amt)||0;
+  // Only auto-halve if Jay's is empty or unchanged from Pearl (not yet halved)
+  if(jaysAmt>0&&Math.abs(jaysAmt-pearlAmt)>0.005)return;
+  const half=+(pearlAmt/2).toFixed(2);
+  AF.lineItems[pearlIdx].amt=String(half);
+  AF.lineItems[i].amt=String(half);
+  const rows=document.querySelectorAll('.li-row');
+  const pearlInp=rows[pearlIdx]?.querySelector('.li-amt');
+  const jaysInp =rows[i]?.querySelector('.li-amt');
+  if(pearlInp)pearlInp.value=half;
+  if(jaysInp) jaysInp.value=half;
+  updateLiTotal();
+}
+
+function liCatChange(i,cat){
+  if(!AF.lineItems[i])return;
+  AF.lineItems[i].category=cat;
+  const pid=AF.lineItems[i].pairId;
+  if(!pid)return;
+  const myProp=AF.lineItems[i].property;
+  // Find the paired counterpart
+  const pairIdx=AF.lineItems.findIndex((li,j)=>j!==i&&li.pairId===pid);
+  if(pairIdx<0)return;
+  const pairProp=AF.lineItems[pairIdx].property;
+  // Derive the mapped category for the other row
+  let mappedCat='';
+  if(myProp==='pearl')       mappedCat=jaysCat(cat);
+  else if(myProp==='jays')   mappedCat=pearlCat(cat);
+  if(!mappedCat)return;
+  // Check it's a valid category for the paired row's schedule
+  const validCats=getCats(pairProp);
+  if(!validCats.includes(mappedCat))return;
+  // Update state
+  AF.lineItems[pairIdx].category=mappedCat;
+  // Update DOM
+  const rows=document.querySelectorAll('.li-row');
+  const sel=rows[pairIdx]?.querySelector('.li-cat');
+  if(sel)sel.value=mappedCat;
+}
+
 function liTotal(){return AF.lineItems.reduce((s,li)=>s+(parseFloat(li.amt)||0),0)}
 function liReportTotal(){return AF.lineItems.reduce((s,li)=>li.inReport!==false?s+(parseFloat(li.amt)||0):s,0)}
 function liUpdate(i,k,v){
   if(AF.lineItems[i])AF.lineItems[i][k]=v;
-  const el=document.querySelector('.li-total');
-  if(el)el.innerHTML=`Total: <strong>${fmt$(liTotal())}</strong>${liReportTotal()<liTotal()?` &nbsp;·&nbsp; In report: <strong>${fmt$(liReportTotal())}</strong>`:''}`;
+  updateLiTotal();
 }
 function liAdd(){
   // Default new line to same property as previous line
