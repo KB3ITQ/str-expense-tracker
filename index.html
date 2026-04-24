@@ -458,7 +458,13 @@ const DEFAULT_ACCOUNTS = [
 ];
 
 function loadLS(){
-  try{S.entries=JSON.parse(localStorage.getItem('str_entries_26')||'[]')}catch{S.entries=[]}
+  try{
+    S.entries=JSON.parse(localStorage.getItem('str_entries_26')||'[]');
+    // Assign IDs to any orphan entries that have none
+    let repaired=false;
+    S.entries.forEach(e=>{if(!e.id||e.id==='undefined'){e.id=uid();repaired=true;}});
+    if(repaired){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));}
+  }catch{S.entries=[]}
   try{
     const r=JSON.parse(localStorage.getItem('str_recs')||'null');
     S.recs=(r&&r.length)?r:DEFAULT_RECS.map(x=>({...x}));
@@ -567,6 +573,8 @@ async function syncFromDrive(){
     const mergedFName   = data.folderName||S.folderName;
 
     S.entries     = merged;
+    // Repair any entries that still have no ID
+    S.entries.forEach(e=>{if(!e.id||e.id==='undefined')e.id=uid();});
     S.recs        = mergedRecs;
     S.accounts    = mergedAccts;
     S.checks      = mergedChecks;
@@ -1356,30 +1364,15 @@ function buildHistory(){
   const rows=filtered.length?filtered.map(e=>{
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
     const eid=e.id||'';
-    const hasMultiProp=e.lineItems&&e.lineItems.length>0&&(e.property==='both'||e.property==='mixed');
-    if(hasMultiProp){
-      // Header row
-      const hdr=`<tr style="background:var(--cream-mid)">
-        <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
-        <td colspan="3">
-          <span style="font-weight:500">${esc(e.vendor)}</span>
-          ${e.notes?`<span style="font-size:10px;color:var(--text-light);margin-left:8px">${esc(e.notes)}</span>`:''}
-        </td>
-        <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
-        <td style="text-align:center">${rcpt}</td>
-        <td style="text-align:right;white-space:nowrap">
-          <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${eid}')" title="Delete">${icon('trash',12)}</button>
-        </td>
-      </tr>`;
-      const liRows=e.lineItems.map(li=>`<tr>
-        <td></td>
-        <td style="padding-left:22px;font-size:11px;color:var(--text-mid)">↳ ${li.desc?esc(li.desc):'<em>no description</em>'}</td>
-        <td><span class="badge badge-${li.property}">${PROP_SHORT[li.property]||li.property}</span></td>
-        <td style="color:var(--text-mid);font-size:11px">${esc(li.category)}</td>
-        <td class="num" style="text-align:right">${fmt$(li.amount||0)}</td>
-        <td></td><td></td>
-      </tr>`).join('');
-      return hdr+liRows;
+    // Derive display property/category for entries with line items
+    let dispProp=e.property;
+    let dispCat=e.category;
+    if(e.lineItems&&e.lineItems.length){
+      const props=[...new Set(e.lineItems.map(li=>li.property))];
+      if(props.length===2&&props.includes('pearl')&&props.includes('jays')) dispProp='both';
+      else if(props.length===1) dispProp=props[0];
+      const cats=[...new Set(e.lineItems.map(li=>li.category))];
+      dispCat=cats.length===1?cats[0]:e.lineItems.find(li=>li.property==='pearl')?.category||cats[0]||e.category;
     }
     return`<tr>
       <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
@@ -1387,8 +1380,8 @@ function buildHistory(){
         <div style="font-weight:500">${esc(e.vendor)}</div>
         ${e.notes?`<div style="font-size:10px;color:var(--text-light);margin-top:1px">${esc(e.notes)}</div>`:''}
       </td>
-      <td><span class="badge badge-${e.property}">${PROP_SHORT[e.property]||e.property}</span></td>
-      <td style="color:var(--text-mid);font-size:11px;max-width:140px">${esc(e.category)}</td>
+      <td><span class="badge badge-${dispProp}">${PROP_SHORT[dispProp]||dispProp}</span></td>
+      <td style="color:var(--text-mid);font-size:11px;max-width:160px">${esc(dispCat)}</td>
       <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
       <td style="text-align:center">${rcpt}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -1457,14 +1450,18 @@ function rerenderTable(){renderView('history');}
 function clearFilters(){S.fSearch='';S.fProp='';S.fCat='';S.fFrom='';S.fTo='';renderView('history');}
 function delEntry(id){
   confirm2('Delete this expense?',()=>{
-    if(id==='undefined'||id===undefined||id===''){
-      // Legacy entries with no ID — find and remove by index via a temp marker
-      const idx=S.entries.findIndex(e=>!e.id||e.id==='undefined');
-      if(idx>-1)S.entries.splice(idx,1);
+    if(!id||id==='undefined'){
+      // Orphan entry with no ID — remove by position (first one found)
+      const idx=S.entries.findIndex(e=>!e.id||e.id==='undefined'||e.id===null);
+      if(idx>-1) S.entries.splice(idx,1);
+      else{ toast('Could not find entry to delete',true); return; }
     } else {
       S.entries=S.entries.filter(e=>e.id!==id);
     }
-    saveEntries();renderView('history');toast('Deleted');
+    saveEntries(false); // save locally without triggering debounced sync
+    if(S.gToken) syncToDrive(); // force-push immediately so Drive copy is updated
+    renderView('history');
+    toast('Deleted');
   });
 }
 function editEntry(id){
