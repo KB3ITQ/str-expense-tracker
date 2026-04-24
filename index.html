@@ -1365,8 +1365,8 @@ function buildHistory(){
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
     const eid=e.id||'';
     // Derive display property/category for entries with line items
-    let dispProp=e.property;
-    let dispCat=e.category;
+    let dispProp=VALID_PROPS.has(e.property)?e.property:'pearl';
+    let dispCat=e.category||'';
     if(e.lineItems&&e.lineItems.length){
       const props=[...new Set(e.lineItems.map(li=>li.property))];
       if(props.length===2&&props.includes('pearl')&&props.includes('jays')) dispProp='both';
@@ -1397,6 +1397,7 @@ function buildHistory(){
     <button class="btn btn-secondary btn-sm" onclick="exportCSV()">${icon('dl')} Export CSV</button>
   </div>
   <div class="page-content" style="max-width:none">
+    ${corruptedBanner()}
     <div class="filters-bar">
       <input type="text" id="fi-search" placeholder="Search vendor or notes…" value="${esc(S.fSearch)}" oninput="S.fSearch=this.value;rerenderTable()">
       <select id="fi-prop" onchange="S.fProp=this.value;rerenderTable()">
@@ -1448,20 +1449,50 @@ function filteredEntries(){
 }
 function rerenderTable(){renderView('history');}
 function clearFilters(){S.fSearch='';S.fProp='';S.fCat='';S.fFrom='';S.fTo='';renderView('history');}
+const VALID_PROPS = new Set(['pearl','jays','both','mixed']);
+const VALID_DATE  = d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d);
+
+function isCorrupted(e){
+  return !VALID_DATE(e.date)||!e.vendor||!VALID_PROPS.has(e.property);
+}
+
+function corruptedBanner(){
+  const bad=S.entries.filter(isCorrupted);
+  if(!bad.length)return'';
+  return`<div style="display:flex;align-items:center;justify-content:space-between;
+    background:var(--red-lt);border:1px solid rgba(168,56,40,.2);border-radius:6px;
+    padding:10px 16px;margin-bottom:14px;gap:12px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--red)">
+      ⚠ ${bad.length} corrupted entr${bad.length===1?'y':'ies'} detected
+      (invalid date or missing property — cannot be used in reports or CSV)
+    </span>
+    <button class="btn btn-danger btn-sm" onclick="purgeCorrupted()">Remove All Corrupted</button>
+  </div>`;
+}
+
+function purgeCorrupted(){
+  const before=S.entries.length;
+  S.entries=S.entries.filter(e=>!isCorrupted(e));
+  const removed=before-S.entries.length;
+  saveEntries(false);
+  if(S.gToken)syncToDrive();
+  renderView('history');
+  toast(`Removed ${removed} corrupted entr${removed===1?'y':'ies'}`);
+}
+
 function delEntry(id){
   confirm2('Delete this expense?',()=>{
-    if(!id||id==='undefined'){
-      // Orphan entry with no ID — remove by position (first one found)
-      const idx=S.entries.findIndex(e=>!e.id||e.id==='undefined'||e.id===null);
-      if(idx>-1) S.entries.splice(idx,1);
-      else{ toast('Could not find entry to delete',true); return; }
+    // Use splice on the found index — immune to ID type issues
+    const idx=S.entries.findIndex(e=>String(e.id)===String(id));
+    if(idx>-1){
+      S.entries.splice(idx,1);
+      saveEntries(false);
+      if(S.gToken)syncToDrive();
+      renderView('history');
+      toast('Deleted');
     } else {
-      S.entries=S.entries.filter(e=>e.id!==id);
+      toast('Entry not found — try refreshing',true);
     }
-    saveEntries(false); // save locally without triggering debounced sync
-    if(S.gToken) syncToDrive(); // force-push immediately so Drive copy is updated
-    renderView('history');
-    toast('Deleted');
   });
 }
 function editEntry(id){
