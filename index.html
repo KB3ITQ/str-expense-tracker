@@ -378,11 +378,13 @@ const DEFAULT_RECS = [
 const PROP_LABEL = {pearl:'Pearl in the Pines', jays:"Jay's Retreat", both:'Both (50/50)', mixed:'Mixed'};
 const PROP_SHORT = {pearl:'Pearl', jays:"Jay's", both:'Both', mixed:'Mixed'};
 
-const RECEIPT_EXEMPT = ['anec','t-mobile','tmobile','pricelabs','jim oconnor',"jim o'connor"];
 function requiresReceipt(vendor){
   if(!vendor)return false;
   const vl=vendor.toLowerCase().trim();
-  return !RECEIPT_EXEMPT.some(e=>vl.includes(e));
+  // Look up in master vendor list
+  const match=S.vendors.find(v=>v.name.toLowerCase()===vl||vl.includes(v.name.toLowerCase())||v.name.toLowerCase().includes(vl));
+  if(match)return match.receiptRequired!==false;
+  return true; // unknown vendors default to receipt required
 }
 
 // SVG icons
@@ -415,6 +417,7 @@ const S = {
   recs: [],
   accounts: [],
   checks: {},
+  vendors: [],   // master vendor list
   vendorBlock: new Set(),
   histSort: {col:'date', dir:'desc'},
   folderId: null,
@@ -457,6 +460,30 @@ const DEFAULT_ACCOUNTS = [
   {id:'ac_15', name:'Email Folder',             freq:'"expense receipts" inbox folder'},
 ];
 
+// Master vendor list — separate from receipt checklist accounts
+// receiptRequired: true = receipt needed, false = not needed
+const DEFAULT_VENDORS = [
+  {id:'v_01',  name:'Amazon',                   receiptRequired:true},
+  {id:'v_02',  name:'ANEC',                     receiptRequired:true},
+  {id:'v_03',  name:'Canva',                    receiptRequired:true},
+  {id:'v_04',  name:'eBay',                     receiptRequired:true},
+  {id:'v_05',  name:'Google',                   receiptRequired:true},
+  {id:'v_06',  name:'Harbor Freight',           receiptRequired:true},
+  {id:'v_07',  name:'Home Depot',               receiptRequired:true},
+  {id:'v_08',  name:'Jim OConnor',              receiptRequired:true},
+  {id:'v_09',  name:'Marcela Castro',           receiptRequired:true},
+  {id:'v_10',  name:'Pricelabs',                receiptRequired:true},
+  {id:'v_11',  name:"Sam's Club",               receiptRequired:true},
+  {id:'v_12',  name:'Santiago Morente',         receiptRequired:true},
+  {id:'v_13',  name:'Sunbelt Rentals',          receiptRequired:true},
+  {id:'v_14',  name:'T-Mobile',                 receiptRequired:true},
+  {id:'v_15',  name:'Town of Chincoteague',     receiptRequired:true},
+  {id:'v_16',  name:'Walmart',                  receiptRequired:true},
+  {id:'v_17',  name:'Windsor Mt Joy',           receiptRequired:true},
+  {id:'v_18',  name:'Accomack County',          receiptRequired:true},
+  {id:'v_19',  name:'Facebook Marketplace',     receiptRequired:true},
+];
+
 function loadLS(){
   try{
     S.entries=JSON.parse(localStorage.getItem('str_entries_26')||'[]');
@@ -473,6 +500,10 @@ function loadLS(){
     const a=JSON.parse(localStorage.getItem('str_accounts')||'null');
     S.accounts=(a&&a.length)?a:DEFAULT_ACCOUNTS.map(x=>({...x}));
   }catch{S.accounts=DEFAULT_ACCOUNTS.map(x=>({...x}))}
+  try{
+    const v=JSON.parse(localStorage.getItem('str_vendors')||'null');
+    S.vendors=(v&&v.length)?v:DEFAULT_VENDORS.map(x=>({...x}));
+  }catch{S.vendors=DEFAULT_VENDORS.map(x=>({...x}))}
   try{S.checks=JSON.parse(localStorage.getItem('str_checks')||'{}')}catch{S.checks={}}
   try{const b=JSON.parse(localStorage.getItem('str_vblock')||'[]');S.vendorBlock=new Set(b);}catch{S.vendorBlock=new Set();}
   S.folderId  = localStorage.getItem('str_fid')   || null;
@@ -485,6 +516,7 @@ let _isSyncing = false;
 function saveEntries(sync=true){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));if(sync)scheduleSync();}
 function saveRecs(sync=true){localStorage.setItem('str_recs',JSON.stringify(S.recs));if(sync)scheduleSync();}
 function saveAccounts(sync=true){localStorage.setItem('str_accounts',JSON.stringify(S.accounts));if(sync)scheduleSync();}
+function saveVendors(sync=true){localStorage.setItem('str_vendors',JSON.stringify(S.vendors));if(sync)scheduleSync();}
 function saveChecks(sync=true){localStorage.setItem('str_checks',JSON.stringify(S.checks));if(sync)scheduleSync();}
 function saveVendorBlock(sync=true){localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));if(sync)scheduleSync();}
 function saveFolder(){
@@ -569,6 +601,7 @@ async function syncFromDrive(){
     const mergedAccts   = (data.accounts&&data.accounts.length) ? data.accounts : S.accounts;
     const mergedChecks  = data.checks  ||S.checks;
     const mergedVBlock  = data.vendorBlock||[...S.vendorBlock];
+    const mergedVendors = (data.vendors&&data.vendors.length)?data.vendors:S.vendors;
     const mergedFolder  = data.folderId||S.folderId;
     const mergedFName   = data.folderName||S.folderName;
 
@@ -579,6 +612,7 @@ async function syncFromDrive(){
     S.accounts    = mergedAccts;
     S.checks      = mergedChecks;
     S.vendorBlock = new Set(mergedVBlock);
+    S.vendors     = mergedVendors;
     if(mergedFolder){S.folderId=mergedFolder;S.folderName=mergedFName||'';}
 
     // Write merged data to localStorage
@@ -587,6 +621,7 @@ async function syncFromDrive(){
     localStorage.setItem('str_accounts',JSON.stringify(S.accounts));
     localStorage.setItem('str_checks',JSON.stringify(S.checks));
     localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));
+    localStorage.setItem('str_vendors',JSON.stringify(S.vendors));
     if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
 
     setSyncStatus(`Synced ✓ (${S.entries.length} entries)`);
@@ -613,7 +648,7 @@ async function syncToDrive(){
   setSyncStatus('Saving…');
   try{
     const payload=JSON.stringify({
-      entries:S.entries, recs:S.recs, accounts:S.accounts,
+      entries:S.entries, recs:S.recs, accounts:S.accounts, vendors:S.vendors,
       checks:S.checks, vendorBlock:[...S.vendorBlock],
       folderId:S.folderId, folderName:S.folderName,
       savedAt:new Date().toISOString(),
@@ -670,17 +705,8 @@ function suggestCat(vendor,prop){
   }
   return'';
 }
-function vendorHistory(){
-  const seen=new Set(S.entries.map(e=>e.vendor).filter(Boolean));
-  VENDOR_RULES.forEach(r=>r.match.forEach(m=>seen.add(m.replace(/\b\w/g,c=>c.toUpperCase()))));
-  return[...seen].filter(v=>!S.vendorBlock.has(v)).sort();
-}
-function blockVendor(v){
-  S.vendorBlock.add(v);
-  saveVendorBlock();
-  const ac=document.getElementById('vendor-ac');
-  if(ac)ac.style.display='none';
-  toast('Removed "'+v+'" from suggestions');
+function vendorNames(){
+  return S.vendors.map(v=>v.name).sort((a,b)=>a.localeCompare(b));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -881,16 +907,16 @@ function buildAddView(){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
       <div id="receipt-area">${receiptHTML}</div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto">
-        ${recReq?`<div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
-          <span id="save-msg" style="font-size:11px;color:var(--amber);font-style:italic">Receipt required for ${esc(vendor)||'this vendor'}</span>
-          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:var(--text-mid);font-style:normal;text-transform:none;letter-spacing:0;white-space:nowrap">
-            <input type="checkbox" id="f-override" onchange="toggleOverride(this.checked)" style="width:13px;height:13px;accent-color:var(--amber);cursor:pointer">
-            Override
+        <div style="display:flex;align-items:center;gap:12px;justify-content:flex-end">
+          <span id="save-msg" style="font-size:11px;font-style:italic;${recReq?'color:var(--amber)':'color:transparent'}">${recReq?`Receipt required for ${esc(vendor)||'this vendor'}`:'placeholder'}</span>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:var(--text-mid);text-transform:none;letter-spacing:0;white-space:nowrap;font-weight:400">
+            <input type="checkbox" id="f-override" onchange="toggleOverride(this.checked)" ${AF.receiptOverride?'checked':''} style="width:13px;height:13px;accent-color:var(--amber);cursor:pointer">
+            Override receipt
           </label>
-        </div>`:'<span id="save-msg"></span>'}
+        </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-secondary" onclick="resetAddForm()">Clear</button>
-          <button class="btn btn-primary" id="save-btn" onclick="submitAdd()" ${recReq?'disabled style="opacity:.45;cursor:not-allowed"':''}>
+          <button class="btn btn-primary" id="save-btn" onclick="submitAdd()" ${recReq&&!AF.receiptOverride?'disabled style="opacity:.45;cursor:not-allowed"':''}>
             ${icon('add')} Save Expense
           </button>
         </div>
@@ -1120,20 +1146,17 @@ function onReceiptSelect(inp){
 function onVendorInput(v){
   const ac=document.getElementById('vendor-ac');
   if(!ac)return;
-  if(!v||v.length<2){ac.style.display='none';return;}
-  const matches=vendorHistory().filter(x=>x.toLowerCase().includes(v.toLowerCase())).slice(0,8);
-  if(!matches.length){ac.style.display='none';}
-  else{
-    ac.innerHTML=matches.map(m=>`
-      <div class="ac-item" style="display:flex;align-items:center;justify-content:space-between;padding:0">
-        <span style="flex:1;padding:7px 11px" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</span>
-        <span onmousedown="event.preventDefault();blockVendor('${esc(m)}')" title="Remove from suggestions"
-          style="padding:7px 10px;color:var(--text-light);cursor:pointer;font-size:14px;line-height:1;flex-shrink:0"
-          onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-light)'">×</span>
-      </div>`).join('');
-    ac.style.display='block';
-  }
-  // Auto-suggest categories if vendor matches a rule
+  if(!v||v.length<1){ac.style.display='none';return;}
+  const vl=v.toLowerCase();
+  const matches=vendorNames().filter(x=>x.toLowerCase().includes(vl)).slice(0,10);
+  const showAdd=v.trim()&&!vendorNames().some(x=>x.toLowerCase()===vl);
+  if(!matches.length&&!showAdd){ac.style.display='none';return;}
+  ac.innerHTML=matches.map(m=>`
+    <div class="ac-item" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</div>`).join('')
+    +(showAdd?`<div class="ac-item" style="color:var(--green-light);border-top:1px solid var(--border-lt)"
+      onmousedown="addVendorFromInput('${esc(v.trim())}')">+ Add "${esc(v.trim())}" as new vendor</div>`:'');
+  ac.style.display='block';
+  // Auto-suggest categories
   const cat=suggestCat(v,'pearl');
   if(cat){
     document.querySelectorAll('.li-row').forEach(row=>{
@@ -1142,6 +1165,14 @@ function onVendorInput(v){
       if(sug){const s=row.querySelector('.li-cat');if(s&&!s.value)s.value=sug;}
     });
   }
+}
+function addVendorFromInput(name){
+  if(!name)return;
+  if(S.vendors.some(v=>v.name.toLowerCase()===name.toLowerCase()))return;
+  S.vendors.push({id:'v_'+uid(),name,receiptRequired:true});
+  saveVendors();
+  pickVendor(name);
+  toast('"'+name+'" added to vendor list');
 }
 function closeAC(){const ac=document.getElementById('vendor-ac');if(ac)ac.style.display='none';}
 function pickVendor(v){
@@ -2108,6 +2139,35 @@ function buildSettings(){
         <button class="btn btn-danger btn-sm" onclick="confirmReset()">Reset</button>
       </div>
     </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Vendor List &amp; Receipt Rules</div>
+        <button class="btn btn-primary btn-sm" onclick="addVendorModal()">${icon('add')} Add Vendor</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:12px">
+        Check the box to require a receipt when that vendor is entered. Uncheck to allow saving without one.
+      </div>
+      <div style="border:1px solid var(--border-lt);border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:0;background:var(--cream-mid);padding:7px 12px;border-bottom:1px solid var(--border-lt)">
+          <span style="font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-light)">Vendor</span>
+          <span style="font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-light);text-align:center;white-space:nowrap;padding:0 12px">Receipt Req.</span>
+          <span></span>
+        </div>
+        ${S.vendors.sort((a,b)=>a.name.localeCompare(b.name)).map((v,i)=>`
+          <div style="display:grid;grid-template-columns:1fr auto auto;gap:0;padding:8px 12px;border-bottom:1px solid var(--border-lt);align-items:center">
+            <span style="font-size:13px;font-weight:500">${esc(v.name)}</span>
+            <div style="text-align:center;padding:0 12px">
+              <input type="checkbox" ${v.receiptRequired!==false?'checked':''}
+                onchange="setVendorReceipt('${v.id}',this.checked)"
+                style="width:15px;height:15px;accent-color:var(--green-dark);cursor:pointer">
+            </div>
+            <div style="display:flex;gap:4px">
+              <button class="btn btn-ghost btn-icon btn-xs" onclick="editVendorModal('${v.id}')" title="Rename">${icon('edit',12)}</button>
+              <button class="btn btn-danger btn-icon btn-xs" onclick="deleteVendor('${v.id}')" title="Remove">${icon('trash',12)}</button>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>
     <div class="card" style="font-size:11px;color:var(--text-light)">
       <div class="card-title" style="font-size:12px">Properties</div>
       <div style="line-height:1.7">
@@ -2120,10 +2180,72 @@ function buildSettings(){
 }
 
 function clearFolder(){S.folderId=null;S.folderName=null;saveFolder();renderView('settings');toast('Folder cleared');}
+
+function setVendorReceipt(id,val){
+  const v=S.vendors.find(x=>x.id===id);
+  if(v){v.receiptRequired=val;saveVendors();toast(v.name+': receipt '+(val?'required':'not required'));}
+}
+function deleteVendor(id){
+  const v=S.vendors.find(x=>x.id===id);
+  if(!v)return;
+  confirm2(`Remove "${v.name}" from vendor list?`,()=>{
+    S.vendors=S.vendors.filter(x=>x.id!==id);
+    saveVendors();renderView('settings');toast('Vendor removed');
+  });
+}
+function addVendorModal(){
+  showModal(`
+    <h3>Add Vendor</h3>
+    <div class="form-group" style="margin-bottom:12px">
+      <label>Vendor Name</label>
+      <input type="text" id="m-vname" placeholder="e.g. Costco" autofocus>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px">
+      <input type="checkbox" id="m-vreq" checked style="width:14px;height:14px;accent-color:var(--green-dark)">
+      <label for="m-vreq" style="font-size:12px;color:var(--text-mid);cursor:pointer;text-transform:none;letter-spacing:0">Receipt required</label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="_vendorSave()">Add</button>
+    </div>
+  `);
+  setTimeout(()=>document.getElementById('m-vname')?.focus(),50);
+  window._vendorSave=function(){
+    const name=document.getElementById('m-vname')?.value.trim();
+    if(!name){toast('Name is required',true);return;}
+    if(S.vendors.some(v=>v.name.toLowerCase()===name.toLowerCase())){toast('Vendor already exists',true);return;}
+    const receiptRequired=document.getElementById('m-vreq')?.checked??true;
+    S.vendors.push({id:'v_'+uid(),name,receiptRequired});
+    saveVendors();closeModal();renderView('settings');toast('"'+name+'" added');
+  };
+}
+function editVendorModal(id){
+  const v=S.vendors.find(x=>x.id===id);if(!v)return;
+  showModal(`
+    <h3>Rename Vendor</h3>
+    <div class="form-group" style="margin-bottom:18px">
+      <label>Vendor Name</label>
+      <input type="text" id="m-vname" value="${esc(v.name)}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="_vendorRename('${id}')">Save</button>
+    </div>
+  `);
+  setTimeout(()=>document.getElementById('m-vname')?.focus(),50);
+  window._vendorRename=function(vid){
+    const vv=S.vendors.find(x=>x.id===vid);if(!vv)return;
+    const name=document.getElementById('m-vname')?.value.trim();
+    if(!name){toast('Name is required',true);return;}
+    vv.name=name;saveVendors();closeModal();renderView('settings');toast('Vendor renamed');
+  };
+}
 function confirmReset(){
   confirm2('Delete ALL entries and reset settings? This cannot be undone.',()=>{
-    S.entries=[];S.recs=DEFAULT_RECS.map(x=>({...x}));S.folderId=null;S.folderName=null;
-    saveEntries();saveRecs();saveFolder();
+    S.entries=[];S.recs=DEFAULT_RECS.map(x=>({...x}));
+    S.vendors=DEFAULT_VENDORS.map(x=>({...x}));
+    S.folderId=null;S.folderName=null;
+    saveEntries();saveRecs();saveVendors();saveFolder();
     renderView('settings');toast('All data reset');
   });
 }
