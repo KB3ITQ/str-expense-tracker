@@ -105,17 +105,7 @@ textarea{resize:vertical;min-height:56px}
 select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%237A9082' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;cursor:pointer}
 
 /* ── PROPERTY BUTTONS ── */
-.prop-btns{display:flex;gap:7px}
-.prop-btn{
-  flex:1;padding:8px 6px;border:2px solid var(--border-lt);border-radius:6px;
-  background:var(--white);font-family:'DM Mono',monospace;font-size:11px;
-  cursor:pointer;text-align:center;transition:all .15s;color:var(--text-mid);
-  letter-spacing:.02em;
-}
-.prop-btn:hover{border-color:var(--green-pale);background:var(--green-wash)}
-.prop-btn.sel-pearl{border-color:var(--green-light)!important;background:var(--green-wash)!important;color:var(--green-dark)!important;font-weight:500}
-.prop-btn.sel-jays{border-color:var(--amber-mid)!important;background:var(--amber-lt)!important;color:var(--amber)!important;font-weight:500}
-.prop-btn.sel-both{border-color:var(--purple)!important;background:var(--purple-lt)!important;color:var(--purple)!important;font-weight:500}
+
 
 /* ── BUTTONS ── */
 .btn{font-family:'DM Mono',monospace;font-size:12px;font-weight:500;padding:8px 16px;border-radius:5px;border:none;cursor:pointer;transition:all .15s;letter-spacing:.03em;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
@@ -144,6 +134,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .badge-pearl{background:var(--green-wash);color:var(--green-dark);border:1px solid var(--green-pale)}
 .badge-jays{background:var(--amber-lt);color:var(--amber);border:1px solid #D4A060}
 .badge-both{background:var(--purple-lt);color:var(--purple);border:1px solid #B0A8D8}
+.badge-mixed{background:var(--cream-dark);color:var(--text-mid);border:1px solid var(--border)}
 
 /* ── TABLE ── */
 .data-table{width:100%;border-collapse:collapse;font-size:12px}
@@ -441,7 +432,7 @@ const AF = {
   receiptDriveId: null,
   receiptDriveName: null,
   receiptDriveLink: null,
-  date: '', vendor:'', notes:'',
+  date: '', vendor:'', notes:'', receiptOverride: false,
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -815,7 +806,7 @@ function goTo(view){
 function renderView(v){
   const el=document.getElementById('view');
   switch(v){
-    case 'add':       el.innerHTML=buildAddView();       bindAddView();    break;
+    case 'add':       el.innerHTML=buildAddView();    break;
     case 'recurring': el.innerHTML=buildRecurring();                       break;
     case 'history':   el.innerHTML=buildHistory();       bindHistFilters();break;
     case 'summary':   el.innerHTML=buildSummary();                         break;
@@ -882,7 +873,13 @@ function buildAddView(){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
       <div id="receipt-area">${receiptHTML}</div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto">
-        ${recReq?`<span id="save-msg" style="font-size:11px;color:var(--amber);font-style:italic">Receipt required for ${esc(vendor)||'this vendor'}</span>`:'<span id="save-msg"></span>'}
+        ${recReq?`<div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+          <span id="save-msg" style="font-size:11px;color:var(--amber);font-style:italic">Receipt required for ${esc(vendor)||'this vendor'}</span>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:var(--text-mid);font-style:normal;text-transform:none;letter-spacing:0;white-space:nowrap">
+            <input type="checkbox" id="f-override" onchange="toggleOverride(this.checked)" style="width:13px;height:13px;accent-color:var(--amber);cursor:pointer">
+            Override
+          </label>
+        </div>`:'<span id="save-msg"></span>'}
         <div style="display:flex;gap:8px">
           <button class="btn btn-secondary" onclick="resetAddForm()">Clear</button>
           <button class="btn btn-primary" id="save-btn" onclick="submitAdd()" ${recReq?'disabled style="opacity:.45;cursor:not-allowed"':''}>
@@ -951,11 +948,23 @@ function renderReceiptSection(){
     <input type="file" id="f-receipt" accept="image/*,.pdf" style="display:none" onchange="onReceiptSelect(this)">`;
 }
 
-function bindAddView(){}
+
+function toggleOverride(checked){
+  AF.receiptOverride=checked;
+  const btn=document.getElementById('save-btn');
+  const msg=document.getElementById('save-msg');
+  if(checked){
+    if(btn){btn.disabled=false;btn.style.opacity='';btn.style.cursor='';}
+    if(msg){msg.textContent='Receipt overridden';msg.style.color='var(--text-light)';}
+  } else {
+    updateSaveBtn(document.getElementById('f-vendor')?.value||'');
+  }
+}
 
 function updateSaveBtn(vendor){
   const hasReceipt=!!(AF.receiptFile||AF.receiptDriveId);
-  const recReq=requiresReceipt(vendor)&&!hasReceipt;
+  const overridden=document.getElementById('f-override')?.checked||AF.receiptOverride;
+  const recReq=requiresReceipt(vendor)&&!hasReceipt&&!overridden;
   const btn=document.getElementById('save-btn');
   const msg=document.getElementById('save-msg');
   if(btn){btn.disabled=recReq;btn.style.opacity=recReq?'.45':'';btn.style.cursor=recReq?'not-allowed':'';}
@@ -1141,7 +1150,7 @@ function pickVendor(v){
 function resetAddForm(){
   Object.assign(AF,{lineItems:[{property:'pearl',category:'',desc:'',amt:'',inReport:true}],
     receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,
-    date:today(),vendor:'',notes:''});
+    date:today(),vendor:'',notes:'',receiptOverride:false});
   renderView('add');
 }
 
@@ -1164,17 +1173,31 @@ async function submitAdd(){
 
   const totalAmount=lineItems.reduce((s,li)=>s+li.amount,0);
   const hasReceipt=!!(AF.receiptDriveId||AF.receiptFile);
+  const overridden=document.getElementById('f-override')?.checked||AF.receiptOverride;
 
   if(!date)  return toast('Date is required',true);
   if(!vendor)return toast('Vendor is required',true);
   if(!lineItems.length||totalAmount<=0)return toast('At least one line item with an amount is required',true);
   if(lineItems.some(li=>!li.category))return toast('Please select a category for each line item',true);
-  if(requiresReceipt(vendor)&&!hasReceipt)return toast('A receipt is required for '+vendor,true);
+  if(requiresReceipt(vendor)&&!hasReceipt&&!overridden)return toast('A receipt is required for '+vendor,true);
 
   // Derive top-level property/category from line items
   const props=[...new Set(lineItems.map(li=>li.property))];
-  const topProp=props.length===1?props[0]:'mixed';
-  const topCat=props.length===1&&[...new Set(lineItems.map(li=>li.category))].length===1?lineItems[0].category:'mixed';
+  let topProp,topCat;
+  if(props.length===1){
+    topProp=props[0];
+    const cats=[...new Set(lineItems.map(li=>li.category))];
+    topCat=cats.length===1?cats[0]:'mixed';
+  } else if(props.length===2&&props.includes('pearl')&&props.includes('jays')){
+    // Pearl+Jay's pair — treat as Both
+    topProp='both';
+    // Use Pearl's category as the display category (Jay's is the mapped equivalent)
+    const pearlCats=[...new Set(lineItems.filter(li=>li.property==='pearl').map(li=>li.category))];
+    topCat=pearlCats.length===1?pearlCats[0]:'mixed';
+  } else {
+    topProp='mixed';
+    topCat='mixed';
+  }
 
   const entry={id:uid(),date,vendor,property:topProp,category:topCat,
     amount:totalAmount,notes,lineItems,inReport:lineItems.some(li=>li.inReport!==false),
@@ -1332,19 +1355,45 @@ function buildHistory(){
   const th='cursor:pointer;user-select:none;white-space:nowrap';
   const rows=filtered.length?filtered.map(e=>{
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
+    const eid=e.id||'';
+    const hasMultiProp=e.lineItems&&e.lineItems.length>0&&(e.property==='both'||e.property==='mixed');
+    if(hasMultiProp){
+      // Header row
+      const hdr=`<tr style="background:var(--cream-mid)">
+        <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
+        <td colspan="3">
+          <span style="font-weight:500">${esc(e.vendor)}</span>
+          ${e.notes?`<span style="font-size:10px;color:var(--text-light);margin-left:8px">${esc(e.notes)}</span>`:''}
+        </td>
+        <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
+        <td style="text-align:center">${rcpt}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${eid}')" title="Delete">${icon('trash',12)}</button>
+        </td>
+      </tr>`;
+      const liRows=e.lineItems.map(li=>`<tr>
+        <td></td>
+        <td style="padding-left:22px;font-size:11px;color:var(--text-mid)">↳ ${li.desc?esc(li.desc):'<em>no description</em>'}</td>
+        <td><span class="badge badge-${li.property}">${PROP_SHORT[li.property]||li.property}</span></td>
+        <td style="color:var(--text-mid);font-size:11px">${esc(li.category)}</td>
+        <td class="num" style="text-align:right">${fmt$(li.amount||0)}</td>
+        <td></td><td></td>
+      </tr>`).join('');
+      return hdr+liRows;
+    }
     return`<tr>
       <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
       <td>
         <div style="font-weight:500">${esc(e.vendor)}</div>
         ${e.notes?`<div style="font-size:10px;color:var(--text-light);margin-top:1px">${esc(e.notes)}</div>`:''}
       </td>
-      <td><span class="badge badge-${e.property}">${PROP_SHORT[e.property]}</span></td>
+      <td><span class="badge badge-${e.property}">${PROP_SHORT[e.property]||e.property}</span></td>
       <td style="color:var(--text-mid);font-size:11px;max-width:140px">${esc(e.category)}</td>
       <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
       <td style="text-align:center">${rcpt}</td>
       <td style="text-align:right;white-space:nowrap">
-        <button class="btn btn-ghost btn-icon btn-xs" onclick="editEntry('${e.id}')" title="Edit">${icon('edit',12)}</button>
-        <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${e.id}')" title="Delete">${icon('trash',12)}</button>
+        <button class="btn btn-ghost btn-icon btn-xs" onclick="editEntry('${eid}')" title="Edit">${icon('edit',12)}</button>
+        <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${eid}')" title="Delete">${icon('trash',12)}</button>
       </td>
     </tr>`;
   }).join(''):`<tr><td colspan="7" class="empty" style="padding:36px"><p>No entries match the current filters.</p></td></tr>`;
@@ -1408,7 +1457,13 @@ function rerenderTable(){renderView('history');}
 function clearFilters(){S.fSearch='';S.fProp='';S.fCat='';S.fFrom='';S.fTo='';renderView('history');}
 function delEntry(id){
   confirm2('Delete this expense?',()=>{
-    S.entries=S.entries.filter(e=>e.id!==id);
+    if(id==='undefined'||id===undefined||id===''){
+      // Legacy entries with no ID — find and remove by index via a temp marker
+      const idx=S.entries.findIndex(e=>!e.id||e.id==='undefined');
+      if(idx>-1)S.entries.splice(idx,1);
+    } else {
+      S.entries=S.entries.filter(e=>e.id!==id);
+    }
     saveEntries();renderView('history');toast('Deleted');
   });
 }
