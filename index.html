@@ -1364,23 +1364,27 @@ function buildHistory(){
   const rows=filtered.length?filtered.map(e=>{
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
     const eid=e.id||'';
-    // Derive display property/category for entries with line items
+    // Derive display property/category — always validate, never let undefined through
     let dispProp=VALID_PROPS.has(e.property)?e.property:'pearl';
     let dispCat=e.category||'';
     if(e.lineItems&&e.lineItems.length){
-      const props=[...new Set(e.lineItems.map(li=>li.property))];
-      if(props.length===2&&props.includes('pearl')&&props.includes('jays')) dispProp='both';
-      else if(props.length===1) dispProp=props[0];
-      const cats=[...new Set(e.lineItems.map(li=>li.category))];
-      dispCat=cats.length===1?cats[0]:e.lineItems.find(li=>li.property==='pearl')?.category||cats[0]||e.category;
+      const liProps=[...new Set(e.lineItems.map(li=>li.property).filter(p=>VALID_PROPS.has(p)))];
+      if(liProps.length===2&&liProps.includes('pearl')&&liProps.includes('jays')) dispProp='both';
+      else if(liProps.length===1) dispProp=liProps[0];
+      // else keep entry-level dispProp as fallback
+      const liCats=[...new Set(e.lineItems.map(li=>li.category).filter(Boolean))];
+      if(liCats.length===1) dispCat=liCats[0];
+      else if(liCats.length>1) dispCat=e.lineItems.find(li=>li.property==='pearl')?.category||liCats[0]||e.category||'';
     }
+    // Final safety — dispProp must always be a valid key
+    if(!VALID_PROPS.has(dispProp)) dispProp='pearl';
     return`<tr>
       <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
       <td>
         <div style="font-weight:500">${esc(e.vendor)}</div>
         ${e.notes?`<div style="font-size:10px;color:var(--text-light);margin-top:1px">${esc(e.notes)}</div>`:''}
       </td>
-      <td><span class="badge badge-${dispProp}">${PROP_SHORT[dispProp]||dispProp}</span></td>
+      <td><span class="badge badge-${dispProp}">${PROP_SHORT[dispProp]}</span></td>
       <td style="color:var(--text-mid);font-size:11px;max-width:160px">${esc(dispCat)}</td>
       <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
       <td style="text-align:center">${rcpt}</td>
@@ -1453,18 +1457,38 @@ const VALID_PROPS = new Set(['pearl','jays','both','mixed']);
 const VALID_DATE  = d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d);
 
 function isCorrupted(e){
-  return !VALID_DATE(e.date)||!e.vendor||!VALID_PROPS.has(e.property);
+  // Truly corrupted: bad date format or missing vendor (can't be used at all)
+  return !VALID_DATE(e.date)||!e.vendor;
+}
+function hasInvalidProp(e){
+  return !VALID_PROPS.has(e.property);
 }
 
 function corruptedBanner(){
   const bad=S.entries.filter(isCorrupted);
+  const badProp=S.entries.filter(e=>!isCorrupted(e)&&hasInvalidProp(e));
+  // Auto-repair invalid properties silently on each render
+  let repaired=false;
+  badProp.forEach(e=>{
+    // Try to derive from line items first
+    if(e.lineItems&&e.lineItems.length){
+      const liProps=[...new Set(e.lineItems.map(li=>li.property).filter(p=>VALID_PROPS.has(p)))];
+      if(liProps.length===2&&liProps.includes('pearl')&&liProps.includes('jays')) e.property='both';
+      else if(liProps.length===1) e.property=liProps[0];
+      else e.property='pearl';
+    } else {
+      e.property='pearl';
+    }
+    repaired=true;
+  });
+  if(repaired){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));}
   if(!bad.length)return'';
   return`<div style="display:flex;align-items:center;justify-content:space-between;
     background:var(--red-lt);border:1px solid rgba(168,56,40,.2);border-radius:6px;
     padding:10px 16px;margin-bottom:14px;gap:12px;flex-wrap:wrap">
     <span style="font-size:12px;color:var(--red)">
       ⚠ ${bad.length} corrupted entr${bad.length===1?'y':'ies'} detected
-      (invalid date or missing property — cannot be used in reports or CSV)
+      (invalid date or missing vendor — cannot be used in reports or CSV)
     </span>
     <button class="btn btn-danger btn-sm" onclick="purgeCorrupted()">Remove All Corrupted</button>
   </div>`;
