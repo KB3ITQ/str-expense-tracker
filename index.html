@@ -2309,39 +2309,51 @@ function pickFolder(id,name){
 // CSV EXPORT
 // ═══════════════════════════════════════════════════════════
 function exportCSV(){
-  const rows=[['Date','Description','Account','Expense']];
+  // Format date as M/D/YYYY to match Google Sheet
+  const fmtCSVDate=d=>{
+    if(!d)return'';
+    const[y,m,dy]=d.split('-');
+    return`${+m}/${+dy}/${y}`;
+  };
+  const rows=[['Date','Vendor','Notes','Account','Expense']];
   [...S.entries].sort((a,b)=>a.date<b.date?-1:1).forEach(e=>{
-    const desc=e.vendor+(e.notes?' — '+e.notes:'');
     if(e.lineItems&&e.lineItems.length){
-      // New format: use per-line-item property/category
+      // Per-line-item format
       e.lineItems.forEach(li=>{
-        const a=li.amount||0;if(!a)return;
+        const amt=li.amount||0;if(!amt)return;
         const p=li.property||e.property||'pearl';
         const cat=li.category||e.category||'';
-        const liDesc=desc+(li.desc?' — '+li.desc:'');
+        // Notes = entry notes + line item description
+        const notes=[e.notes,li.desc].filter(Boolean).join(' - ');
         if(p==='both'){
-          rows.push([e.date,liDesc,'Pearl: '+pearlCat(cat),(a/2).toFixed(2)]);
-          rows.push([e.date,liDesc,"Jay's: "+jaysCat(cat),(a/2).toFixed(2)]);
+          rows.push([fmtCSVDate(e.date),e.vendor,notes,'Pearl: '+pearlCat(cat),(amt/2).toFixed(2)]);
+          rows.push([fmtCSVDate(e.date),e.vendor,notes,"Jay's: "+jaysCat(cat),(amt/2).toFixed(2)]);
         } else if(p==='pearl'){
-          rows.push([e.date,liDesc,'Pearl: '+cat,a.toFixed(2)]);
+          rows.push([fmtCSVDate(e.date),e.vendor,notes,'Pearl: '+cat,amt.toFixed(2)]);
         } else {
-          rows.push([e.date,liDesc,"Jay's: "+cat,a.toFixed(2)]);
+          rows.push([fmtCSVDate(e.date),e.vendor,notes,"Jay's: "+cat,amt.toFixed(2)]);
         }
       });
     } else {
-      // Legacy format
+      // Legacy single-amount format
+      const notes=e.notes||'';
       if(e.property==='both'){
-        rows.push([e.date,desc,'Pearl: '+pearlCat(e.category),(e.amount/2).toFixed(2)]);
-        rows.push([e.date,desc,"Jay's: "+jaysCat(e.category),(e.amount/2).toFixed(2)]);
+        rows.push([fmtCSVDate(e.date),e.vendor,notes,'Pearl: '+pearlCat(e.category),(e.amount/2).toFixed(2)]);
+        rows.push([fmtCSVDate(e.date),e.vendor,notes,"Jay's: "+jaysCat(e.category),(e.amount/2).toFixed(2)]);
       } else if(e.property==='pearl'){
-        rows.push([e.date,desc,'Pearl: '+e.category,e.amount.toFixed(2)]);
+        rows.push([fmtCSVDate(e.date),e.vendor,notes,'Pearl: '+e.category,e.amount.toFixed(2)]);
       } else {
-        rows.push([e.date,desc,"Jay's: "+e.category,e.amount.toFixed(2)]);
+        rows.push([fmtCSVDate(e.date),e.vendor,notes,"Jay's: "+e.category,e.amount.toFixed(2)]);
       }
     }
   });
-  const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const a=Object.assign(document.createElement('a'),{href:URL.createObjectURL(new Blob([csv],{type:'text/csv'})),download:'STR_Expenses_2026.csv'});
+  // Use UTF-8 BOM so Excel opens it correctly without encoding issues
+  const bom='\uFEFF';
+  const csv=bom+rows.map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const a=Object.assign(document.createElement('a'),{
+    href:URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),
+    download:'STR_Expenses_2026.csv'
+  });
   a.click();URL.revokeObjectURL(a.href);
   toast(`CSV exported (${rows.length-1} rows)`);
 }
