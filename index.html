@@ -418,7 +418,6 @@ const S = {
   accounts: [],
   checks: {},
   vendors: [],   // master vendor list
-  vendorBlock: new Set(),
   histSort: {col:'date', dir:'desc'},
   folderId: null,
   folderName: null,
@@ -505,7 +504,6 @@ function loadLS(){
     S.vendors=(v&&v.length)?v:DEFAULT_VENDORS.map(x=>({...x}));
   }catch{S.vendors=DEFAULT_VENDORS.map(x=>({...x}))}
   try{S.checks=JSON.parse(localStorage.getItem('str_checks')||'{}')}catch{S.checks={}}
-  try{const b=JSON.parse(localStorage.getItem('str_vblock')||'[]');S.vendorBlock=new Set(b);}catch{S.vendorBlock=new Set();}
   S.folderId  = localStorage.getItem('str_fid')   || null;
   S.folderName= localStorage.getItem('str_fname') || null;
 }
@@ -518,7 +516,6 @@ function saveRecs(sync=true){localStorage.setItem('str_recs',JSON.stringify(S.re
 function saveAccounts(sync=true){localStorage.setItem('str_accounts',JSON.stringify(S.accounts));if(sync)scheduleSync();}
 function saveVendors(sync=true){localStorage.setItem('str_vendors',JSON.stringify(S.vendors));if(sync)scheduleSync();}
 function saveChecks(sync=true){localStorage.setItem('str_checks',JSON.stringify(S.checks));if(sync)scheduleSync();}
-function saveVendorBlock(sync=true){localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));if(sync)scheduleSync();}
 function saveFolder(){
   S.folderId  ? localStorage.setItem('str_fid',S.folderId)    : localStorage.removeItem('str_fid');
   S.folderName? localStorage.setItem('str_fname',S.folderName): localStorage.removeItem('str_fname');
@@ -600,7 +597,6 @@ async function syncFromDrive(){
     const mergedRecs    = (data.recs    &&data.recs.length)    ? data.recs     : S.recs;
     const mergedAccts   = (data.accounts&&data.accounts.length) ? data.accounts : S.accounts;
     const mergedChecks  = data.checks  ||S.checks;
-    const mergedVBlock  = data.vendorBlock||[...S.vendorBlock];
     const mergedVendors = (data.vendors&&data.vendors.length)?data.vendors:S.vendors;
     const mergedFolder  = data.folderId||S.folderId;
     const mergedFName   = data.folderName||S.folderName;
@@ -611,7 +607,6 @@ async function syncFromDrive(){
     S.recs        = mergedRecs;
     S.accounts    = mergedAccts;
     S.checks      = mergedChecks;
-    S.vendorBlock = new Set(mergedVBlock);
     S.vendors     = mergedVendors;
     if(mergedFolder){S.folderId=mergedFolder;S.folderName=mergedFName||'';}
 
@@ -620,7 +615,6 @@ async function syncFromDrive(){
     localStorage.setItem('str_recs',JSON.stringify(S.recs));
     localStorage.setItem('str_accounts',JSON.stringify(S.accounts));
     localStorage.setItem('str_checks',JSON.stringify(S.checks));
-    localStorage.setItem('str_vblock',JSON.stringify([...S.vendorBlock]));
     localStorage.setItem('str_vendors',JSON.stringify(S.vendors));
     if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
 
@@ -649,7 +643,7 @@ async function syncToDrive(){
   try{
     const payload=JSON.stringify({
       entries:S.entries, recs:S.recs, accounts:S.accounts, vendors:S.vendors,
-      checks:S.checks, vendorBlock:[...S.vendorBlock],
+      checks:S.checks,
       folderId:S.folderId, folderName:S.folderName,
       savedAt:new Date().toISOString(),
       entryCount:S.entries.length
@@ -734,7 +728,7 @@ async function fetchUserInfo(){
     S.gUser={name:displayName,email:u.email};
     renderSbUser();
     toast('Signed in as '+displayName);
-    if(S.view==='settings')renderView('settings');
+    if(S.view==='settings'||S.view==='add')renderView(S.view);
     // On sign-in: if we have local entries and no known Drive file, push first
     if(S.entries.length>0&&!syncFileId){
       syncToDrive();
@@ -842,7 +836,7 @@ function renderView(v){
   switch(v){
     case 'add':       el.innerHTML=buildAddView();    break;
     case 'recurring': el.innerHTML=buildRecurring();                       break;
-    case 'history':   el.innerHTML=buildHistory();       bindHistFilters();break;
+    case 'history':   el.innerHTML=buildHistory();    break;
     case 'summary':   el.innerHTML=buildSummary();                         break;
     case 'report':    el.innerHTML=buildReport();                          break;
     case 'checklist': el.innerHTML=buildChecklist();                       break;
@@ -870,6 +864,25 @@ function captureAddForm(){
 }
 
 function buildAddView(){
+  // Require Google sign-in before allowing expense entry
+  if(!S.gToken){
+    return`
+    <div class="page-header"><h2>Add Expense</h2></div>
+    <div class="page-content">
+      <div class="card" style="max-width:480px;text-align:center;padding:40px 32px">
+        <div style="font-size:40px;margin-bottom:16px">🔒</div>
+        <div style="font-family:'Fraunces',serif;font-size:18px;font-weight:500;color:var(--green-dark);margin-bottom:10px">Sign in required</div>
+        <div style="font-size:13px;color:var(--text-mid);line-height:1.6;margin-bottom:24px">
+          You must be signed in to Google before adding expenses.<br>
+          This ensures receipts are uploaded to Drive and your data syncs across devices.
+        </div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center;padding:11px" onclick="signIn()">
+          Sign in with Google
+        </button>
+      </div>
+    </div>`;
+  }
+
   const receiptHTML=renderReceiptSection();
   const vendor=AF.vendor||'';
   const hasReceipt=!!(AF.receiptFile||AF.receiptDriveId);
@@ -1234,7 +1247,7 @@ async function submitAdd(){
     const pearlCats=[...new Set(lineItems.filter(li=>li.property==='pearl').map(li=>li.category))];
     topCat=pearlCats.length===1?pearlCats[0]:'mixed';
   } else {
-    topProp='mixed';
+    topProp='both'; // fallback for unexpected multi-prop combos
     topCat='mixed';
   }
 
@@ -1463,7 +1476,6 @@ function buildHistory(){
     </div>
   </div>`;
 }
-function bindHistFilters(){}
 function filteredEntries(){
   const arr=S.entries.filter(e=>{
     if(S.fSearch){const s=S.fSearch.toLowerCase();if(!e.vendor.toLowerCase().includes(s)&&!(e.notes||'').toLowerCase().includes(s))return false;}
