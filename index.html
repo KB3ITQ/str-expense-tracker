@@ -447,7 +447,7 @@ const DEFAULT_ACCOUNTS = [
   {id:'ac_03', name:"Sam's Club",               freq:''},
   {id:'ac_04', name:'Amazon',                   freq:''},
   {id:'ac_05', name:'ANEC',                     freq:'~8th of month'},
-  {id:'ac_06', name:'Town of Chincoteague',     freq:'1st of month'},
+  {id:'ac_06', name:'Town of Chincoteague',     freq:''},
   {id:'ac_07', name:'T-Mobile',                 freq:'18th of month'},
   {id:'ac_08', name:'Pricelabs',                freq:'3rd of month'},
   {id:'ac_09', name:'Jim OConnor — Mortgage',   freq:'3rd of month'},
@@ -560,73 +560,69 @@ async function syncFromDrive(){
   try{
     const fid=syncFileId||await findSyncFile();
     if(!fid){
-      // No file on Drive yet — push local data up
-      setSyncStatus('No Drive file — pushing local data…');
-      _isSyncing=false;
-      await syncToDrive();
+      if(S.entries.length>0){
+        setSyncStatus('Creating Drive file…');
+        _isSyncing=false;
+        await syncToDrive();
+      } else {
+        setSyncStatus('');
+        _isSyncing=false;
+      }
       return;
     }
     const r=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,
       {headers:{Authorization:'Bearer '+S.gToken}});
-    if(!r.ok)throw new Error('read failed');
+    if(!r.ok)throw new Error('read failed: '+r.status);
     const data=await r.json();
-
-    // ── MERGE STRATEGY ──────────────────────────────────────
-    // Merge entries by ID — keep whichever version is newer (by createdAt)
-    // Never discard local entries that don't exist on Drive
+    const driveEntries=data.entries||[];
+    if(driveEntries.length===0&&S.entries.length>0){
+      setSyncStatus('Drive file empty — pushing local data…');
+      _isSyncing=false;
+      await syncToDrive();
+      return;
+    }
     const localById={};
     S.entries.forEach(e=>localById[e.id]=e);
     const driveById={};
-    (data.entries||[]).forEach(e=>driveById[e.id]=e);
-
+    driveEntries.forEach(e=>driveById[e.id]=e);
     const merged=[];
     const allIds=new Set([...Object.keys(localById),...Object.keys(driveById)]);
     allIds.forEach(id=>{
       const local=localById[id];
       const drive=driveById[id];
-      if(local&&drive){
-        // Keep whichever was saved more recently
-        merged.push((local.createdAt||0)>=(drive.createdAt||0)?local:drive);
-      } else {
-        merged.push(local||drive);
-      }
+      if(local&&drive){merged.push((local.createdAt||0)>=(drive.createdAt||0)?local:drive);}
+      else{merged.push(local||drive);}
     });
     merged.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-
-    // For non-entry data, prefer Drive if it has content, otherwise keep local
-    const mergedRecs    = (data.recs    &&data.recs.length)    ? data.recs     : S.recs;
-    const mergedAccts   = (data.accounts&&data.accounts.length) ? data.accounts : S.accounts;
-    const mergedChecks  = data.checks  ||S.checks;
-    const mergedVendors = (data.vendors&&data.vendors.length)?data.vendors:S.vendors;
-    const mergedFolder  = data.folderId||S.folderId;
-    const mergedFName   = data.folderName||S.folderName;
-
-    S.entries     = merged;
-    // Repair any entries that still have no ID
-    S.entries.forEach(e=>{if(!e.id||e.id==='undefined')e.id=uid();});
-    S.recs        = mergedRecs;
-    S.accounts    = mergedAccts;
-    S.checks      = mergedChecks;
-    S.vendors     = mergedVendors;
+    const mergedRecs   =(data.recs    &&data.recs.length)    ?data.recs    :S.recs;
+    const mergedAccts  =(data.accounts&&data.accounts.length) ?data.accounts:S.accounts;
+    const mergedVendors=(data.vendors  &&data.vendors.length)  ?data.vendors :S.vendors;
+    const mergedChecks =data.checks||S.checks;
+    const mergedFolder =data.folderId||S.folderId;
+    const mergedFName  =data.folderName||S.folderName;
+    S.entries  =merged;
+    S.recs     =mergedRecs;
+    S.accounts =mergedAccts;
+    S.vendors  =mergedVendors;
+    S.checks   =mergedChecks;
     if(mergedFolder){S.folderId=mergedFolder;S.folderName=mergedFName||'';}
-
-    // Write merged data to localStorage
+    S.entries.forEach(e=>{if(!e.id||e.id==='undefined')e.id=uid();});
     localStorage.setItem('str_entries_26',JSON.stringify(S.entries));
     localStorage.setItem('str_recs',JSON.stringify(S.recs));
     localStorage.setItem('str_accounts',JSON.stringify(S.accounts));
-    localStorage.setItem('str_checks',JSON.stringify(S.checks));
     localStorage.setItem('str_vendors',JSON.stringify(S.vendors));
+    localStorage.setItem('str_checks',JSON.stringify(S.checks));
     if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
-
-    setSyncStatus(`Synced ✓ (${S.entries.length} entries)`);
+    const entryCount=S.entries.length;
+    setSyncStatus(`Synced ✓ (${entryCount} entries)`);
+    toast(`Data loaded — ${entryCount} entries`);
     renderView(S.view);
-
-    // Push the merged result back to Drive so both sides are in sync
     _isSyncing=false;
     await syncToDrive();
   }catch(e){
     console.error('syncFromDrive error:',e);
     setSyncStatus('Sync failed — local data preserved',true);
+    toast('Sync failed. Check connection and try again.',true);
   }
   finally{_isSyncing=false;}
 }
@@ -729,12 +725,12 @@ async function fetchUserInfo(){
     renderSbUser();
     toast('Signed in as '+displayName);
     if(S.view==='settings'||S.view==='add')renderView(S.view);
-    // On sign-in: if we have local entries and no known Drive file, push first
-    if(S.entries.length>0&&!syncFileId){
-      syncToDrive();
-    } else {
-      syncFromDrive();
-    }
+    // Always try to pull from Drive first on sign-in.
+    // syncFromDrive handles the three cases:
+    //   1. Drive file exists → merge and display
+    //   2. Drive file missing + local data → push local up
+    //   3. Drive file missing + no local data → nothing to do yet
+    syncFromDrive();
   }catch(e){}
 }
 function signIn(){
