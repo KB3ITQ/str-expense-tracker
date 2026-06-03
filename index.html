@@ -257,7 +257,6 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .cl-row:last-child{border-bottom:none}
 .cl-row:hover{background:rgba(243,237,224,.5)}
 .cl-row.cl-done{opacity:.55}
-.cl-row.cl-email{background:var(--amber-lt);border-left:3px solid var(--amber-mid)}
 .cl-cb{width:17px;height:17px;accent-color:var(--green-dark);cursor:pointer;flex-shrink:0}
 .cl-name{flex:1;font-weight:500;font-size:13px}
 .cl-done .cl-name{text-decoration:line-through;text-decoration-color:var(--green-pale)}
@@ -311,9 +310,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 const CLIENT_ID = '633431735669-5f53f7ii3jncdc6ds4iskpuidf3eohqr.apps.googleusercontent.com';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-// Pearl = Schedule E (Pearl in the Pines — managed STR)
 const CATS_PEARL = ['Advertising','Auto and travel','Cleaning and maintenance','Commissions','Insurance','Legal and other professional fees','Management fees','Mortgage interest','Other interest','Repairs','Supplies','Taxes','Utilities','Other','Other: Office expenses'];
-// Jay's = Schedule C (Jay's Retreat — owner-operated STR)
 const CATS_JAYS  = ['Supplies','Advertising','Car and truck expenses','Commissions and fees','Contract labor','Insurance','Legal and professional services','Management fees','Mortgage interest','Office expense','Other interest','Rent or lease','Repairs and maintenance','Taxes and licenses','Utilities','Other'];
 
 // Maps Jay's (Sch C) category to Pearl (Sch E) equivalent
@@ -387,7 +384,6 @@ const DEFAULT_RECS = [
   {id:'rec_jim',       vendor:'Jim OConnor',   amount:1406.59,  day:3,  property:'pearl', category:'Mortgage interest'},
 ];
 
-const PROP_LABEL = {pearl:'Pearl in the Pines', jays:"Jay's Retreat", both:'Both (50/50)', mixed:'Mixed'};
 const PROP_SHORT = {pearl:'Pearl', jays:"Jay's", both:'Both', mixed:'Mixed'};
 
 function requiresReceipt(vendor){
@@ -1266,7 +1262,7 @@ async function _doSaveExpense(editId){
     const pearlCats=[...new Set(lineItems.filter(li=>li.property==='pearl').map(li=>li.category))];
     topCat=pearlCats.length===1?pearlCats[0]:'mixed';
   } else {
-    topProp='both'; // fallback for unexpected multi-prop combos
+    topProp='both';
     topCat='mixed';
   }
 
@@ -1814,22 +1810,23 @@ function accumEntry(e, pearlAcc, jaysAcc, reportOnly=false){
 
 
 function buildReport(){
-  // Default to current month
-  if(!RS.month){
-    const n=new Date();
-    RS.month=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
-  }
-
-  // Build month options from all entries + current month
-  const monthsSet=new Set(S.entries.map(e=>monthK(e.date)).filter(Boolean));
   const n=new Date();
-  monthsSet.add(`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`);
-  const months=[...monthsSet].sort().reverse();
-
+  const currentYM=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
+  if(!RS.month) RS.month=currentYM;
+  // Build full month list: Jan 2026 through current month
+  const months=[];
+  let yr=2026, mo=1;
+  const [curY,curM]=[n.getFullYear(),n.getMonth()+1];
+  while(yr<curY||(yr===curY&&mo<=curM)){
+    months.push(`${yr}-${String(mo).padStart(2,'0')}`);
+    mo++;if(mo>12){mo=1;yr++;}
+  }
+  months.reverse(); // newest first
   const monthOpts=months.map(m=>{
-    const [y,mo]=m.split('-');
-    const label=new Date(+y,+mo-1,1).toLocaleString('default',{month:'long',year:'numeric'});
-    return`<option value="${m}"${m===RS.month?' selected':''}>${label}</option>`;
+    const [y,mm]=m.split('-');
+    const label=new Date(+y,+mm-1,1).toLocaleString('default',{month:'long',year:'numeric'});
+    const hasEntries=S.entries.some(e=>monthK(e.date)===m);
+    return`<option value="${m}"${m===RS.month?' selected':''}>${label}${hasEntries?'':' —'}</option>`;
   }).join('');
 
   const [selY,selMo]=RS.month.split('-');
@@ -2481,13 +2478,14 @@ function showModal(html){
 }
 function closeModal(){document.getElementById('modal-root').innerHTML='';}
 function confirm2(msg,cb){
+  const key='_cb'+Date.now();
+  window[key]=()=>{delete window[key];cb();};
   showModal(`
     <p style="font-size:13px;line-height:1.6;color:var(--text)">${msg}</p>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="closeModal();_ccb()">Confirm</button>
+      <button class="btn btn-danger" onclick="closeModal();${key}()">Confirm</button>
     </div>`);
-  window._ccb=cb;
 }
 
 // ═══════════════════════════════════════════════════════════
