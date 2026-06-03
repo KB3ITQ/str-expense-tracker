@@ -222,6 +222,18 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .tag-pearl{color:var(--green-dark)}
 .tag-jays{color:var(--amber)}
 
+.modal-full{
+  background:var(--white);border-radius:10px;padding:0;max-width:820px;
+  width:95%;max-height:92vh;overflow-y:auto;box-shadow:var(--shadow-lg);
+  animation:modalIn .18s ease;display:flex;flex-direction:column;
+}
+.modal-full-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:18px 24px;border-bottom:1px solid var(--border-lt);
+  position:sticky;top:0;background:var(--white);z-index:1;flex-shrink:0;
+}
+.modal-full-header h3{font-family:'Fraunces',serif;font-size:18px;font-weight:500;color:var(--green-dark)}
+.modal-full-body{padding:24px;flex:1;}
 /* ── REPORT ── */
 .rpt-excluded td{opacity:.38;text-decoration:line-through;text-decoration-color:var(--border)}
 
@@ -779,6 +791,8 @@ async function driveFolderSearch(q){
 // TOAST
 // ═══════════════════════════════════════════════════════════
 let _tt;
+let _editMode=false;
+let _editEntryId=null;
 function toast(msg,err=false){
   const el=document.getElementById('toast');
   el.innerHTML=msg;
@@ -1161,9 +1175,9 @@ function onVendorInput(v){
   const showAdd=v.trim()&&!vendorNames().some(x=>x.toLowerCase()===vl);
   if(!matches.length&&!showAdd){ac.style.display='none';return;}
   ac.innerHTML=matches.map(m=>`
-    <div class="ac-item" onmousedown="pickVendor('${esc(m)}')">${esc(m)}</div>`).join('')
-    +(showAdd?`<div class="ac-item" style="color:var(--green-light);border-top:1px solid var(--border-lt)"
-      onmousedown="addVendorFromInput('${esc(v.trim())}')">+ Add "${esc(v.trim())}" as new vendor</div>`:'');
+    <div class="ac-item" data-v="${esc(m)}" onmousedown="pickVendor(this.dataset.v)">${esc(m)}</div>`).join('')
+    +(showAdd?`<div class="ac-item" data-v="${esc(v.trim())}" style="color:var(--green-light);border-top:1px solid var(--border-lt)"
+      onmousedown="addVendorFromInput(this.dataset.v)">+ Add "${esc(v.trim())}" as new vendor</div>`:'');
   ac.style.display='block';
   // Auto-suggest categories
   const cat=suggestCat(v,'pearl');
@@ -1203,6 +1217,15 @@ function resetAddForm(){
 }
 
 async function submitAdd(){
+  // If in edit mode, update the existing entry instead of creating new
+  if(_editMode&&_editEntryId){
+    await _doSaveExpense(_editEntryId);
+    return;
+  }
+  await _doSaveExpense(null);
+}
+
+async function _doSaveExpense(editId){
   const date  =document.getElementById('f-date')  ?.value||'';
   const vendor=document.getElementById('f-vendor')?.value?.trim()||'';
   const notes =document.getElementById('f-notes') ?.value?.trim()||'';
@@ -1265,9 +1288,28 @@ async function submitAdd(){
     }
   }
 
-  S.entries.unshift(entry);saveEntries();
-  toast('Expense saved');
-  resetAddForm();
+  if(editId){
+    // Update existing entry
+    const idx=S.entries.findIndex(x=>x.id===editId);
+    if(idx>-1){
+      const existing=S.entries[idx];
+      Object.assign(existing,{date,vendor,property:topProp,category:topCat,
+        amount:totalAmount,notes,lineItems,
+        receiptId:entry.receiptId||existing.receiptId,
+        receiptName:entry.receiptName||existing.receiptName,
+        receiptLink:entry.receiptLink||existing.receiptLink,
+      });
+    }
+    saveEntries();
+    closeEditModal();
+    renderView('history');
+    toast('Expense updated');
+  } else {
+    // New entry
+    S.entries.unshift(entry);saveEntries();
+    toast('Expense saved');
+    resetAddForm();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1396,27 +1438,21 @@ function sortHistory(col){
   else{S.histSort.col=col;S.histSort.dir=col==='amount'?'desc':'asc';}
   renderView('history');
 }
-function buildHistory(){
-  const filtered=filteredEntries();
-  const total=filtered.reduce((s,e)=>s+e.amount,0);
-  const allCats=[...new Set([...CATS_PEARL,...CATS_JAYS])].sort();
-  const th='cursor:pointer;user-select:none;white-space:nowrap';
-  const rows=filtered.length?filtered.map(e=>{
+// Extracted row builder — used by both buildHistory and rerenderTable
+function buildHistoryRows(filtered){
+  return filtered.length?filtered.map(e=>{
     const rcpt=e.receiptLink?`<a class="rs-link" href="${esc(e.receiptLink)}" target="_blank" title="${esc(e.receiptName)}">${icon('link',12)}</a>`:'';
     const eid=e.id||'';
-    // Derive display property/category — always validate, never let undefined through
     let dispProp=VALID_PROPS.has(e.property)?e.property:'pearl';
     let dispCat=e.category||'';
     if(e.lineItems&&e.lineItems.length){
       const liProps=[...new Set(e.lineItems.map(li=>li.property).filter(p=>VALID_PROPS.has(p)))];
       if(liProps.length===2&&liProps.includes('pearl')&&liProps.includes('jays')) dispProp='both';
       else if(liProps.length===1) dispProp=liProps[0];
-      // else keep entry-level dispProp as fallback
       const liCats=[...new Set(e.lineItems.map(li=>li.category).filter(Boolean))];
       if(liCats.length===1) dispCat=liCats[0];
       else if(liCats.length>1) dispCat=e.lineItems.find(li=>li.property==='pearl')?.category||liCats[0]||e.category||'';
     }
-    // Final safety — dispProp must always be a valid key
     if(!VALID_PROPS.has(dispProp)) dispProp='pearl';
     return`<tr>
       <td style="white-space:nowrap;font-size:12px">${fmtD(e.date)}</td>
@@ -1429,11 +1465,19 @@ function buildHistory(){
       <td class="num" style="text-align:right">${fmt$(e.amount)}</td>
       <td style="text-align:center">${rcpt}</td>
       <td style="text-align:right;white-space:nowrap">
-        <button class="btn btn-ghost btn-icon btn-xs" onclick="editEntry('${eid}')" title="Edit">${icon('edit',12)}</button>
-        <button class="btn btn-danger btn-icon btn-xs" onclick="delEntry('${eid}')" title="Delete">${icon('trash',12)}</button>
+        <button class="btn btn-ghost btn-icon btn-xs" data-eid="${eid}" onclick="editEntry(this.dataset.eid)" title="Edit">${icon('edit',12)}</button>
+        <button class="btn btn-danger btn-icon btn-xs" data-eid="${eid}" onclick="delEntry(this.dataset.eid)" title="Delete">${icon('trash',12)}</button>
       </td>
     </tr>`;
-  }).join(''):`<tr><td colspan="7" class="empty" style="padding:36px"><p>No entries match the current filters.</p></td></tr>`;
+  }).join(''):`<tr><td colspan="7" class="empty" style="padding:36px"><p>No entries match.</p></td></tr>`;
+}
+
+function buildHistory(){
+  const filtered=filteredEntries();
+  const total=filtered.reduce((s,e)=>s+e.amount,0);
+  const allCats=[...new Set([...CATS_PEARL,...CATS_JAYS])].sort();
+  const th='cursor:pointer;user-select:none;white-space:nowrap';
+  const rows=buildHistoryRows(filtered);
   const hasFilters=S.fSearch||S.fProp||S.fCat||S.fFrom||S.fTo;
   return`
   <div class="page-header">
@@ -1454,7 +1498,7 @@ function buildHistory(){
       </select>
       <input type="date" id="fi-from" value="${S.fFrom}" onchange="S.fFrom=this.value;rerenderTable()" title="From date">
       <input type="date" id="fi-to"   value="${S.fTo}"   onchange="S.fTo=this.value;rerenderTable()"   title="To date">
-      ${hasFilters?`<button class="btn btn-ghost btn-sm" onclick="clearFilters()">✕ Clear</button>`:''}
+      ${hasFilters?`<button id="fi-clear" class="btn btn-ghost btn-sm" onclick="clearFilters()">✕ Clear</button>`:`<button id="fi-clear" class="btn btn-ghost btn-sm" onclick="clearFilters()" style="display:none">✕ Clear</button>`}
     </div>
     <div class="table-wrap" id="hist-table">
       <table class="data-table">
@@ -1468,7 +1512,7 @@ function buildHistory(){
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      ${filtered.length?`<div style="padding:9px 12px;text-align:right;border-top:2px solid var(--border-lt);font-size:11px;color:var(--text-mid)">${filtered.length} entries &middot; Total: <strong style="color:var(--text)">${fmt$(total)}</strong></div>`:''}
+      ${filtered.length?`<div class="hist-footer" style="padding:9px 12px;text-align:right;border-top:2px solid var(--border-lt);font-size:11px;color:var(--text-mid)">${filtered.length} entries &middot; Total: <strong style="color:var(--text)">${fmt$(total)}</strong></div>`:''}
     </div>
   </div>`;
 }
@@ -1490,7 +1534,27 @@ function filteredEntries(){
   });
   return arr;
 }
-function rerenderTable(){renderView('history');}
+function rerenderTable(){
+  const filtered=filteredEntries();
+  const tbody=document.querySelector('#hist-table tbody');
+  if(!tbody){renderView('history');return;}
+  tbody.innerHTML=buildHistoryRows(filtered);
+  // Update footer
+  const footer=document.querySelector('.hist-footer');
+  const total=filtered.reduce((s,e)=>s+e.amount,0);
+  const footerHTML=filtered.length
+    ?`<div class="hist-footer" style="padding:9px 12px;text-align:right;border-top:2px solid var(--border-lt);font-size:11px;color:var(--text-mid)">${filtered.length} entries &middot; Total: <strong style="color:var(--text)">${fmt$(total)}</strong></div>`
+    :'';
+  if(footer) footer.outerHTML=footerHTML||'';
+  else if(footerHTML){
+    const wrap=document.getElementById('hist-table');
+    if(wrap) wrap.insertAdjacentHTML('beforeend',footerHTML);
+  }
+  // Show/hide clear button
+  const hasFilters=S.fSearch||S.fProp||S.fCat||S.fFrom||S.fTo;
+  const clearBtn=document.getElementById('fi-clear');
+  if(clearBtn) clearBtn.style.display=hasFilters?'':'none';
+}
 function clearFilters(){S.fSearch='';S.fProp='';S.fCat='';S.fFrom='';S.fTo='';renderView('history');}
 const VALID_PROPS = new Set(['pearl','jays','both','mixed']);
 const VALID_DATE  = d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d);
@@ -1560,52 +1624,104 @@ function delEntry(id){
 }
 function editEntry(id){
   const e=S.entries.find(x=>x.id===id);if(!e)return;
-  const cats=getCats(e.property);
-  showModal(`
-    <h3>Edit Expense</h3>
-    <div class="form-row" style="margin-bottom:12px">
-      <div class="form-group"><label>Date</label><input type="date" id="e-date" value="${e.date}"></div>
-      <div class="form-group"><label>Vendor</label><input type="text" id="e-vendor" value="${esc(e.vendor)}"></div>
-    </div>
-    <div class="form-row" style="margin-bottom:12px">
-      <div class="form-group">
-        <label>Property</label>
-        <select id="e-prop" onchange="editPropChange(this.value)">
-          ${['pearl','jays','both'].map(p=>`<option value="${p}"${p===e.property?' selected':''} >${PROP_SHORT[p]}</option>`).join('')}
-        </select>
+  _editMode=true;
+  _editEntryId=id;
+  // Load entry data into AF
+  AF.date=e.date||today();
+  AF.vendor=e.vendor||'';
+  AF.notes=e.notes||'';
+  AF.receiptOverride=false;
+  AF.receiptFile=null;
+  AF.receiptDriveId=e.receiptId||null;
+  AF.receiptDriveName=e.receiptName||null;
+  AF.receiptDriveLink=e.receiptLink||null;
+  // Convert to line items
+  if(e.lineItems&&e.lineItems.length){
+    AF.lineItems=e.lineItems.map(li=>({
+      property:VALID_PROPS.has(li.property)?li.property:'pearl',
+      category:li.category||'',
+      desc:li.desc||'',
+      amt:String(li.amount||''),
+      inReport:li.inReport!==false,
+      pairId:li.pairId,
+    }));
+  } else {
+    // Legacy single-amount entry — convert to one line item
+    AF.lineItems=[{
+      property:VALID_PROPS.has(e.property)?e.property:'pearl',
+      category:e.category||'',
+      desc:'',
+      amt:String(e.amount||''),
+      inReport:e.inReport!==false,
+    }];
+  }
+  // Build the same add form content inside a full modal
+  const vendor=AF.vendor;
+  const hasReceipt=!!(AF.receiptDriveId);
+  const recReq=requiresReceipt(vendor)&&!hasReceipt&&!AF.receiptOverride;
+  const receiptHTML=renderReceiptSection();
+  document.getElementById('modal-root').innerHTML=`
+    <div class="modal-overlay">
+      <div class="modal-full">
+        <div class="modal-full-header">
+          <h3>Edit Expense</h3>
+          <button class="btn btn-ghost btn-sm" onclick="closeEditModal()">${icon('x',14)} Cancel</button>
+        </div>
+        <div class="modal-full-body">
+          <div class="form-row four">
+            <div class="form-group">
+              <label>Date</label>
+              <input type="date" id="f-date" value="${AF.date}" max="${today()}">
+            </div>
+            <div class="form-group" style="grid-column:span 3">
+              <label>Vendor / Payee</label>
+              <div class="ac-wrap">
+                <input type="text" id="f-vendor" value="${esc(AF.vendor)}"
+                  placeholder="Vendor name" autocomplete="off"
+                  oninput="onVendorInput(this.value);updateSaveBtn(this.value)" onblur="setTimeout(closeAC,200)">
+                <div class="ac-list" id="vendor-ac" style="display:none"></div>
+              </div>
+            </div>
+          </div>
+          <div id="li-wrap">${renderLISection()}</div>
+          <div class="form-row full" style="margin-top:4px">
+            <div class="form-group">
+              <label>Notes (optional)</label>
+              <textarea id="f-notes" rows="2">${esc(AF.notes)}</textarea>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+            <div id="receipt-area">${receiptHTML}</div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto">
+              <div style="display:flex;align-items:center;gap:12px;justify-content:flex-end">
+                <span id="save-msg" style="font-size:11px;font-style:italic;${recReq?'color:var(--amber)':'color:transparent'}">${recReq?`Receipt required for ${esc(vendor)}`:'placeholder'}</span>
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:var(--text-mid);text-transform:none;letter-spacing:0;white-space:nowrap;font-weight:400">
+                  <input type="checkbox" id="f-override" onchange="toggleOverride(this.checked)" ${AF.receiptOverride?'checked':''} style="width:13px;height:13px;accent-color:var(--amber);cursor:pointer">
+                  Override receipt
+                </label>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-primary" id="save-btn" onclick="submitAdd()" ${recReq&&!AF.receiptOverride?'disabled style="opacity:.45;cursor:not-allowed"':''}>
+                  ${icon('check')} Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Category</label>
-        <select id="e-cat">${cats.map(c=>`<option value="${c}"${c===e.category?' selected':''} >${c}</option>`).join('')}</select>
-      </div>
-    </div>
-    <div class="form-row" style="margin-bottom:16px">
-      <div class="form-group"><label>Amount ($)</label><input type="number" id="e-amount" value="${e.amount}" step="0.01" min="0"></div>
-      <div class="form-group"><label>Notes</label><input type="text" id="e-notes" value="${esc(e.notes||'')}"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="_editSave('${e.id}')">Save Changes</button>
-    </div>
-  `);
+    </div>`;
 }
-function editPropChange(prop){
-  const s=document.getElementById('e-cat');if(!s)return;
-  const prev=s.value;const cats=getCats(prop);
-  s.innerHTML=cats.map(c=>`<option value="${c}"${c===prev?' selected':''} >${c}</option>`).join('');
+
+function closeEditModal(){
+  closeModal();
+  _editMode=false;
+  _editEntryId=null;
+  // Restore AF to clean state
+  Object.assign(AF,{lineItems:[{property:'pearl',category:'',desc:'',amt:'',inReport:true}],
+    receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,
+    date:today(),vendor:'',notes:'',receiptOverride:false});
 }
-window._editSave=function(id){
-  const e=S.entries.find(x=>x.id===id);if(!e)return;
-  const date=document.getElementById('e-date').value;
-  const vendor=document.getElementById('e-vendor').value.trim();
-  const property=document.getElementById('e-prop').value;
-  const category=document.getElementById('e-cat').value;
-  const amount=parseFloat(document.getElementById('e-amount').value);
-  const notes=document.getElementById('e-notes').value.trim();
-  if(!date||!vendor||!category||!(amount>0)){toast('Please fill in all required fields',true);return;}
-  Object.assign(e,{date,vendor,property,category,amount,notes});
-  saveEntries();closeModal();renderView('history');toast('Expense updated');
-};
 
 // ═══════════════════════════════════════════════════════════
 // VIEW: SUMMARY
