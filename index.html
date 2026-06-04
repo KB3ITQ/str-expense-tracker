@@ -1084,8 +1084,14 @@ function liDescInput(i,v){
   updateLiTotal();
 }
 
+// Tracks pairIds that have already been halved — prevents re-halving on window refocus
+const _halvedPairs = new Set();
+
 function liAmtInput(i,v){
   AF.lineItems[i].amt=v;
+  // If Pearl amount changes, reset the halved flag so it can re-trigger
+  const pid=AF.lineItems[i].pairId;
+  if(pid&&AF.lineItems[i].property==='pearl') _halvedPairs.delete(pid);
   updateLiTotal();
 }
 
@@ -1093,16 +1099,18 @@ function liAmtFocus(i){
   const pid=AF.lineItems[i].pairId;
   if(!pid)return;
   if(AF.lineItems[i].property!=='jays')return;
+  if(_halvedPairs.has(pid))return; // Already halved — don't re-halve on refocus
   const pearlIdx=AF.lineItems.findIndex((li,j)=>j!==i&&li.pairId===pid&&li.property==='pearl');
   if(pearlIdx<0)return;
   const pearlAmt=parseFloat(AF.lineItems[pearlIdx].amt)||0;
   if(pearlAmt<=0)return;
   const jaysAmt=parseFloat(AF.lineItems[i].amt)||0;
-  // Only auto-halve if Jay's is empty or unchanged from Pearl (not yet halved)
+  // Only halve if Jay's is empty or still equals the full Pearl amount (user hasn't manually set it)
   if(jaysAmt>0&&Math.abs(jaysAmt-pearlAmt)>0.005)return;
   const half=+(pearlAmt/2).toFixed(2);
   AF.lineItems[pearlIdx].amt=String(half);
   AF.lineItems[i].amt=String(half);
+  _halvedPairs.add(pid); // Mark as done — won't re-halve unless Pearl amount changes
   const rows=document.querySelectorAll('.li-row');
   const pearlInp=rows[pearlIdx]?.querySelector('.li-amt');
   const jaysInp =rows[i]?.querySelector('.li-amt');
@@ -1206,6 +1214,7 @@ function pickVendor(v){
 }
 
 function resetAddForm(){
+  _halvedPairs.clear();
   Object.assign(AF,{lineItems:[{property:'pearl',category:'',desc:'',amt:'',inReport:true}],
     receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,
     date:today(),vendor:'',notes:'',receiptOverride:false});
@@ -1713,6 +1722,7 @@ function closeEditModal(){
   closeModal();
   _editMode=false;
   _editEntryId=null;
+  _halvedPairs.clear();
   // Restore AF to clean state
   Object.assign(AF,{lineItems:[{property:'pearl',category:'',desc:'',amt:'',inReport:true}],
     receiptFile:null,receiptDriveId:null,receiptDriveName:null,receiptDriveLink:null,
