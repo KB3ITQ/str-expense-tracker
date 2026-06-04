@@ -515,19 +515,68 @@ function loadLS(){
   S.folderId  = localStorage.getItem('str_fid')   || null;
   S.folderName= localStorage.getItem('str_fname') || null;
 }
-let syncFileId = localStorage.getItem('str_sync_id')||null;
+let syncFileId   = localStorage.getItem('str_sync_id')||null;
+let lastSyncedAt = localStorage.getItem('str_last_sync')||null;
 let _syncTimer;
-let _isSyncing = false;
+let _isSyncing   = false;
+let _pendingSync = false;
 
-function saveEntries(sync=true){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));if(sync)scheduleSync();}
-function saveRecs(sync=true){localStorage.setItem('str_recs',JSON.stringify(S.recs));if(sync)scheduleSync();}
-function saveAccounts(sync=true){localStorage.setItem('str_accounts',JSON.stringify(S.accounts));if(sync)scheduleSync();}
-function saveVendors(sync=true){localStorage.setItem('str_vendors',JSON.stringify(S.vendors));if(sync)scheduleSync();}
-function saveChecks(sync=true){localStorage.setItem('str_checks',JSON.stringify(S.checks));if(sync)scheduleSync();}
+function markPending(){
+  _pendingSync=true;
+  setSyncStatus('⚠ Unsaved changes');
+}
+function markSynced(){
+  _pendingSync=false;
+  lastSyncedAt=new Date().toISOString();
+  localStorage.setItem('str_last_sync',lastSyncedAt);
+  const label=new Date(lastSyncedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  setSyncStatus('Saved ✓ '+label);
+  renderSbUser();
+}
+// Auto-refresh expired Google token and retry
+function refreshToken(){
+  return new Promise((resolve,reject)=>{
+    if(!tokenClient){reject(new Error('no client'));return;}
+    const prev=tokenClient.callback;
+    tokenClient.callback=(resp)=>{
+      tokenClient.callback=prev;
+      if(resp.error){reject(new Error(resp.error));return;}
+      S.gToken=resp.access_token;
+      resolve();
+    };
+    tokenClient.requestAccessToken({prompt:''});
+  });
+}
+// Wrapper for all Google API calls — handles 401 token expiry automatically
+async function gFetch(url,options={}){
+  const req=()=>fetch(url,{...options,headers:{...options.headers,Authorization:'Bearer '+S.gToken}});
+  let r=await req();
+  if(r.status===401){
+    try{
+      setSyncStatus('Re-authenticating…');
+      await refreshToken();
+      r=await req();
+    }catch(e){
+      setSyncStatus('Session expired — please sign in again',true);
+      toast('Your session expired. Please sign in again.',true);
+      S.gToken=null;S.gUser=null;
+      renderSbUser();
+      if(S.view==='add')renderView('add');
+      throw new Error('token_expired');
+    }
+  }
+  return r;
+}
+
+function saveEntries(sync=true){localStorage.setItem('str_entries_26',JSON.stringify(S.entries));if(sync){markPending();scheduleSync();}}
+function saveRecs(sync=true){localStorage.setItem('str_recs',JSON.stringify(S.recs));if(sync){markPending();scheduleSync();}}
+function saveAccounts(sync=true){localStorage.setItem('str_accounts',JSON.stringify(S.accounts));if(sync){markPending();scheduleSync();}}
+function saveVendors(sync=true){localStorage.setItem('str_vendors',JSON.stringify(S.vendors));if(sync){markPending();scheduleSync();}}
+function saveChecks(sync=true){localStorage.setItem('str_checks',JSON.stringify(S.checks));if(sync){markPending();scheduleSync();}}
 function saveFolder(){
   S.folderId  ? localStorage.setItem('str_fid',S.folderId)    : localStorage.removeItem('str_fid');
   S.folderName? localStorage.setItem('str_fname',S.folderName): localStorage.removeItem('str_fname');
-  scheduleSync();
+  markPending();scheduleSync();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -549,8 +598,7 @@ function setSyncStatus(msg,err=false){
 async function findSyncFile(){
   try{
     const q=encodeURIComponent(`name='${SYNC_FILENAME}' and trashed=false`);
-    const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
-      {headers:{Authorization:'Bearer '+S.gToken}});
+    const r=await gFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
     const d=await r.json();
     if(d.files&&d.files.length){
       syncFileId=d.files[0].id;
@@ -578,8 +626,7 @@ async function syncFromDrive(){
       }
       return;
     }
-    const r=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,
-      {headers:{Authorization:'Bearer '+S.gToken}});
+    const r=await gFetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`);
     if(!r.ok)throw new Error('read failed: '+r.status);
     const data=await r.json();
     const driveEntries=data.entries||[];
@@ -622,7 +669,7 @@ async function syncFromDrive(){
     localStorage.setItem('str_checks',JSON.stringify(S.checks));
     if(S.folderId){localStorage.setItem('str_fid',S.folderId);localStorage.setItem('str_fname',S.folderName);}
     const entryCount=S.entries.length;
-    setSyncStatus(`Synced ✓ (${entryCount} entries)`);
+    markSynced();
     toast(`Data loaded — ${entryCount} entries`);
     renderView(S.view);
     _isSyncing=false;
@@ -655,18 +702,18 @@ async function syncToDrive(){
     const blob=new Blob([payload],{type:'application/json'});
     let fid=syncFileId||await findSyncFile();
     if(fid){
-      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fid}?uploadType=media`,{
-        method:'PATCH',headers:{Authorization:'Bearer '+S.gToken,'Content-Type':'application/json'},body:blob});
+      await gFetch(`https://www.googleapis.com/upload/drive/v3/files/${fid}?uploadType=media`,{
+        method:'PATCH',headers:{'Content-Type':'application/json'},body:blob});
     } else {
       const form=new FormData();
       form.append('metadata',new Blob([JSON.stringify({name:SYNC_FILENAME})],{type:'application/json'}));
       form.append('file',blob);
-      const r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-        {method:'POST',headers:{Authorization:'Bearer '+S.gToken},body:form});
+      const r=await gFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+        {method:'POST',body:form});
       const d=await r.json();
       if(d.id){syncFileId=d.id;localStorage.setItem('str_sync_id',syncFileId);}
     }
-    setSyncStatus(`Saved to Drive ✓ (${S.entries.length} entries)`);
+    markSynced();
   }catch(e){setSyncStatus('Save failed',true);}
   finally{_isSyncing=false;}
 }
@@ -764,8 +811,8 @@ async function driveUpload(file,filename){
   form.append('metadata',new Blob([JSON.stringify(meta)],{type:'application/json'}));
   form.append('file',file);
   try{
-    const r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',{
-      method:'POST',headers:{Authorization:'Bearer '+S.gToken},body:form
+    const r=await gFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',{
+      method:'POST',body:form
     });
     if(!r.ok)throw new Error('HTTP '+r.status);
     return r.json();
@@ -775,9 +822,7 @@ async function driveFolderSearch(q){
   if(!S.gToken)return[];
   try{
     const query=`mimeType='application/vnd.google-apps.folder' and name contains '${q.replace(/'/g,"\\'")}' and trashed=false`;
-    const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&pageSize=12`,{
-      headers:{Authorization:'Bearer '+S.gToken}
-    });
+    const r=await gFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&pageSize=12`);
     const d=await r.json();
     return d.files||[];
   }catch{return[];}
@@ -819,9 +864,11 @@ function buildNav(){
 function renderSbUser(){
   const el=document.getElementById('sb-user');
   if(S.gUser){
+    const _st=lastSyncedAt?new Date(lastSyncedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):null;
+    const _sp=_pendingSync?'⚠ Unsaved':(_st?'Saved ✓ '+_st:'Not yet synced');
     el.innerHTML=`<div class="u-name">${esc(S.gUser.name)}</div>
       <div class="u-email">${esc(S.gUser.email)}</div>
-      <div id="sync-status" style="font-size:10px;color:var(--green-pale);margin:4px 0 6px;min-height:14px;opacity:.8"></div>
+      <div id="sync-status" style="font-size:10px;color:${_pendingSync?'var(--amber)':'var(--green-pale)'};margin:4px 0 6px;min-height:14px">${_sp}</div>
       <div style="display:flex;gap:6px">
         <button class="sb-btn" style="flex:1" onclick="syncFromDrive()">↓ Sync</button>
         <button class="sb-btn" style="flex:1" onclick="signOut()">Sign out</button>
@@ -2509,6 +2556,20 @@ function init(){
   renderView(S.view);
   // Retry Google init after delay if script loads late
   setTimeout(()=>{if(typeof google!=='undefined'&&!tokenClient)onGoogleScriptLoad();},2500);
+  // When user returns to this tab, push any pending changes immediately
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&S.gToken&&_pendingSync){
+      clearTimeout(_syncTimer);
+      syncToDrive();
+    }
+  });
+  // Warn before closing/navigating away with unsynced changes
+  window.addEventListener('beforeunload',e=>{
+    if(_pendingSync){
+      e.preventDefault();
+      e.returnValue='You have changes that haven\'t synced to Drive yet.';
+    }
+  });
 }
 document.addEventListener('DOMContentLoaded',init);
 </script>
