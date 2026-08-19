@@ -609,7 +609,7 @@ async function findSyncFile(){
   return null;
 }
 
-async function syncFromDrive(){
+async function syncFromDrive(isRetry=false){
   if(!S.gToken)return;
   setSyncStatus('Syncing…');
   _isSyncing=true;
@@ -627,6 +627,17 @@ async function syncFromDrive(){
       return;
     }
     const r=await gFetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`);
+    if(r.status===404&&!isRetry){
+      // Cached file ID is stale (file moved/deleted/mismatched) — clear it and
+      // re-search Drive by filename once before giving up. Prevents silent
+      // long-term sync failure from a single bad cached ID.
+      console.warn('Sync file id stale (404) — clearing str_sync_id and re-searching');
+      syncFileId=null;
+      localStorage.removeItem('str_sync_id');
+      _isSyncing=false;
+      await syncFromDrive(true);
+      return;
+    }
     if(!r.ok)throw new Error('read failed: '+r.status);
     const data=await r.json();
     const driveEntries=data.entries||[];
